@@ -9,47 +9,119 @@ import logging
 import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import date, datetime, timedelta
-from typing import Any
-from zoneinfo import ZoneInfo
+from datetime import date, timedelta
+from typing import Any, Generic, TypeVar
 
 import httpx
-import msgspec
+from pydantic import BaseModel, Field
 from fastmcp import Context, FastMCP
 
 log = logging.getLogger(__name__)
+
+T = TypeVar("T")
 
 # ---------------------------------------------------------------------------
 # Tandoor data structures
 # ---------------------------------------------------------------------------
 
 
-class TandoorMealType(msgspec.Struct):
-    """A meal type in Tandoor (e.g. breakfast, lunch, dinner)."""
+class TandoorUser(BaseModel):
+    """A Tandoor user reference."""
+
+    id: int
+    username: str = ""
+    first_name: str = ""
+    last_name: str = ""
+    display_name: str = ""
+
+
+class TandoorKeywordLabel(BaseModel):
+    """Keyword as returned in recipe overview (label only)."""
+
+    id: int
+    label: str = ""
+
+
+class TandoorMealType(BaseModel):
+    """A meal type (e.g. breakfast, lunch, dinner).
+
+    Matches the ``MealType`` schema from the Tandoor OpenAPI spec.
+    """
 
     id: int | None = None
     name: str = ""
     order: int = 0
+    time: str | None = None
+    color: str | None = None
+    default: bool = False
+    created_by: int | None = None
 
 
-class TandoorRecipe(msgspec.Struct, kw_only=True):
-    """A recipe reference inside a meal plan entry."""
+class TandoorRecipeOverview(BaseModel):
+    """Recipe overview as embedded in meal plan entries.
+
+    Matches the ``RecipeOverview`` schema from the Tandoor OpenAPI spec.
+    """
 
     id: int
     name: str = ""
+    description: str | None = None
+    image: str | None = None
+    keywords: list[TandoorKeywordLabel] = Field(default_factory=list)
+    working_time: int = 0
+    waiting_time: int = 0
+    created_by: TandoorUser | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+    internal: bool = True
+    servings: int = 1
+    servings_text: str = ""
+    rating: float | None = None
+    last_cooked: str | None = None
 
 
-class TandoorMealPlan(msgspec.Struct, kw_only=True):
-    """A meal plan entry in Tandoor."""
+class TandoorMealPlan(BaseModel):
+    """A meal plan entry.
+
+    Matches the ``MealPlan`` schema from the Tandoor OpenAPI spec.
+    """
 
     id: int | None = None
     title: str = ""
-    recipe: TandoorRecipe | None = None
+    recipe: TandoorRecipeOverview | None = None
     servings: float = 1.0
     note: str = ""
+    note_markdown: str = ""
     from_date: str = ""
     to_date: str = ""
     meal_type: TandoorMealType | None = None
+    created_by: int | None = None
+    shared: list[TandoorUser] | None = None
+    recipe_name: str = ""
+    meal_type_name: str = ""
+    shopping: bool = False
+
+
+class PaginatedResponse(BaseModel, Generic[T]):
+    """Generic paginated response wrapper matching Tandoor's pagination."""
+
+    count: int = 0
+    next: str | None = None
+    previous: str | None = None
+    results: list[T] = Field(default_factory=list)
+
+
+class TandoorError(BaseModel):
+    """Structured error response returned by tool functions."""
+
+    error: str
+    details: Any = None
+
+
+class TandoorDeleteResponse(BaseModel):
+    """Response returned after a successful delete."""
+
+    message: str
 
 
 # ---------------------------------------------------------------------------
@@ -88,32 +160,157 @@ class TandoorClient:
 
     # -- meal types ---------------------------------------------------------
 
-    def list_meal_types(self) -> list[dict[str, Any]]:
+    def list_meal_types(self) -> list[TandoorMealType]:
         """List all meal types configured in Tandoor."""
         resp = self.client.get("/api/meal-type/")
         resp.raise_for_status()
         data = resp.json()
         raw = data.get("results", data) if isinstance(data, dict) else data
-        meal_types = msgspec.convert(raw, type=list[TandoorMealType])
-        return [msgspec.to_builtins(mt) for mt in meal_types]
+        return [TandoorMealType.model_validate(mt) for mt in raw]
 
     # -- recipes ------------------------------------------------------------
 
-    def search_recipes(self, query: str | None = None) -> list[dict[str, Any]]:
-        """Search recipes by name.
+    def search_recipes(
+        self,
+        query: str | None = None,
+        keywords: list[int] | None = None,
+        foods: list[int] | None = None,
+        rating: int | None = None,
+        internal: bool | None = None,
+        random: bool = False,
+        page: int = 1,
+        page_size: int = 25,
+    ) -> PaginatedResponse[TandoorRecipeOverview]:
+        """Search recipes with optional filters.
 
         Args:
             query: Optional search string to filter recipes by name.
+            keywords: Optional list of keyword IDs to filter by (OR logic).
+            foods: Optional list of food IDs to filter by (OR logic).
+            rating: Optional minimum rating to filter by.
+            internal: If True, only return internal recipes.
+            random: If True, return results in random order.
+            page: Page number for pagination (default 1).
+            page_size: Number of results per page (default 25).
         """
-        params: dict[str, Any] = {}
+        params: dict[str, Any] = {"page": page, "page_size": page_size}
         if query:
             params["query"] = query
+        if keywords:
+            params["keywords"] = keywords
+        if foods:
+            params["foods"] = foods
+        if rating is not None:
+            params["rating_gte"] = rating
+        if internal is not None:
+            params["internal"] = internal
+        if random:
+            params["random"] = True
         resp = self.client.get("/api/recipe/", params=params)
         resp.raise_for_status()
         data = resp.json()
-        # Tandoor paginates recipes; return the results list
-        results = data.get("results", data) if isinstance(data, dict) else data
-        return results
+        if isinstance(data, dict) and "results" in data:
+            recipes = [TandoorRecipeOverview.model_validate(r) for r in data["results"]]
+            return PaginatedResponse[TandoorRecipeOverview](
+                count=data.get("count", 0),
+                next=data.get("next"),
+                previous=data.get("previous"),
+                results=recipes,
+            )
+        recipes = [TandoorRecipeOverview.model_validate(r) for r in data]
+        return PaginatedResponse[TandoorRecipeOverview](count=len(recipes), results=recipes)
+
+    # -- recipe import from URL ---------------------------------------------
+
+    def import_recipe_from_url(self, url: str) -> TandoorRecipeOverview | TandoorError:
+        """Import a recipe from a URL into Tandoor.
+
+        This is a two-step process:
+        1. POST to /api/recipe-from-source/ to scrape/parse the recipe.
+        2. POST to /api/recipe/ to create the recipe in Tandoor.
+
+        Args:
+            url: The URL of the recipe to import.
+        """
+        # Step 1: Scrape the recipe from the URL
+        resp = self.client.post(
+            "/api/recipe-from-source/",
+            json={"url": url},
+        )
+        if resp.status_code == 400:
+            return TandoorError(error="Bad request", details=resp.json())
+        resp.raise_for_status()
+        source_data = resp.json()
+
+        if source_data.get("error"):
+            return TandoorError(
+                error="Failed to parse recipe from URL",
+                details=source_data.get("msg", ""),
+            )
+
+        # If the recipe was already created by the scraper (recipe_id present)
+        recipe_id = source_data.get("recipe_id")
+        if recipe_id:
+            get_resp = self.client.get(f"/api/recipe/{recipe_id}/")
+            if get_resp.status_code == 200:
+                return TandoorRecipeOverview.model_validate(get_resp.json())
+
+        # Step 2: Build the recipe payload from the scraped data
+        recipe_data = source_data.get("recipe", {})
+        if not recipe_data:
+            return TandoorError(error="No recipe data returned from source")
+
+        payload: dict[str, Any] = {
+            "name": recipe_data.get("name", "Imported Recipe"),
+            "internal": recipe_data.get("internal", True),
+            "source_url": recipe_data.get("source_url", url),
+        }
+
+        if recipe_data.get("description"):
+            payload["description"] = recipe_data["description"]
+        if recipe_data.get("servings"):
+            payload["servings"] = recipe_data["servings"]
+        if recipe_data.get("servings_text"):
+            payload["servings_text"] = recipe_data["servings_text"]
+        if recipe_data.get("working_time"):
+            payload["working_time"] = recipe_data["working_time"]
+        if recipe_data.get("waiting_time"):
+            payload["waiting_time"] = recipe_data["waiting_time"]
+
+        if recipe_data.get("steps"):
+            payload["steps"] = recipe_data["steps"]
+
+        if recipe_data.get("keywords"):
+            payload["keywords"] = [
+                kw for kw in recipe_data["keywords"]
+                if kw.get("import_keyword", True)
+            ]
+
+        if recipe_data.get("properties"):
+            payload["properties"] = recipe_data["properties"]
+
+        create_resp = self.client.post("/api/recipe/", json=payload)
+        if create_resp.status_code == 400:
+            return TandoorError(error="Bad request creating recipe", details=create_resp.json())
+        create_resp.raise_for_status()
+        created = create_resp.json()
+
+        # Step 3: If there's an image URL, upload it
+        images = source_data.get("images", [])
+        image_url = recipe_data.get("image_url")
+        if not image_url and images:
+            image_url = images[0]
+
+        if image_url and created.get("id"):
+            try:
+                self.client.put(
+                    f"/api/recipe/{created['id']}/image/",
+                    json={"image_url": image_url},
+                )
+            except Exception:
+                log.warning("Failed to upload image for recipe %s", created.get("id"))
+
+        return TandoorRecipeOverview.model_validate(created)
 
     # -- meal plans ---------------------------------------------------------
 
@@ -122,7 +319,7 @@ class TandoorClient:
         from_date: date | None = None,
         to_date: date | None = None,
         query: str | None = None,
-    ) -> list[dict[str, Any]]:
+    ) -> list[TandoorMealPlan]:
         """List meal plan entries within a date range.
 
         Args:
@@ -142,21 +339,19 @@ class TandoorClient:
         resp = self.client.get("/api/meal-plan/", params=params)
         resp.raise_for_status()
         data = resp.json()
-        # Tandoor paginates; results may be in a "results" key or bare list
         raw = data.get("results", data) if isinstance(data, dict) else data
-        plans = msgspec.convert(raw, type=list[TandoorMealPlan])
-        results = [msgspec.to_builtins(p) for p in plans]
+        plans = [TandoorMealPlan.model_validate(p) for p in raw]
         if query:
             q = query.lower()
-            results = [
-                r for r in results
-                if q in r.get("title", "").lower()
-                or q in r.get("note", "").lower()
-                or (r.get("recipe") and q in r["recipe"].get("name", "").lower())
+            plans = [
+                p for p in plans
+                if q in p.title.lower()
+                or q in p.note.lower()
+                or (p.recipe is not None and q in p.recipe.name.lower())
             ]
-        return results
+        return plans
 
-    def get_meal_plan(self, meal_plan_id: int) -> dict[str, Any] | None:
+    def get_meal_plan(self, meal_plan_id: int) -> TandoorMealPlan | None:
         """Get a single meal plan entry by ID.
 
         Args:
@@ -166,8 +361,7 @@ class TandoorClient:
         if resp.status_code == 404:
             return None
         resp.raise_for_status()
-        plan = msgspec.convert(resp.json(), type=TandoorMealPlan)
-        return msgspec.to_builtins(plan)
+        return TandoorMealPlan.model_validate(resp.json())
 
     def create_meal_plan(
         self,
@@ -178,7 +372,7 @@ class TandoorClient:
         recipe_id: int | None = None,
         servings: float = 1.0,
         note: str = "",
-    ) -> dict[str, Any]:
+    ) -> TandoorMealPlan | TandoorError:
         """Create a new meal plan entry.
 
         Args:
@@ -207,10 +401,9 @@ class TandoorClient:
 
         resp = self.client.post("/api/meal-plan/", json=body)
         if resp.status_code == 400:
-            return {"error": "Bad request", "details": resp.json()}
+            return TandoorError(error="Bad request", details=resp.json())
         resp.raise_for_status()
-        created = msgspec.convert(resp.json(), type=TandoorMealPlan)
-        return msgspec.to_builtins(created)
+        return TandoorMealPlan.model_validate(resp.json())
 
     def update_meal_plan(
         self,
@@ -222,7 +415,7 @@ class TandoorClient:
         recipe_id: int | None = None,
         servings: float | None = None,
         note: str | None = None,
-    ) -> dict[str, Any]:
+    ) -> TandoorMealPlan | TandoorError:
         """Update an existing meal plan entry. Only provided fields are changed.
 
         Args:
@@ -253,14 +446,13 @@ class TandoorClient:
 
         resp = self.client.patch(f"/api/meal-plan/{meal_plan_id}/", json=body)
         if resp.status_code == 404:
-            return {"error": f"Meal plan {meal_plan_id} not found"}
+            return TandoorError(error=f"Meal plan {meal_plan_id} not found")
         if resp.status_code == 400:
-            return {"error": "Bad request", "details": resp.json()}
+            return TandoorError(error="Bad request", details=resp.json())
         resp.raise_for_status()
-        updated = msgspec.convert(resp.json(), type=TandoorMealPlan)
-        return msgspec.to_builtins(updated)
+        return TandoorMealPlan.model_validate(resp.json())
 
-    def delete_meal_plan(self, meal_plan_id: int) -> dict[str, Any]:
+    def delete_meal_plan(self, meal_plan_id: int) -> TandoorDeleteResponse:
         """Delete a meal plan entry.
 
         Args:
@@ -268,9 +460,9 @@ class TandoorClient:
         """
         resp = self.client.delete(f"/api/meal-plan/{meal_plan_id}/")
         if resp.status_code == 404:
-            return {"message": f"Meal plan {meal_plan_id} already deleted"}
+            return TandoorDeleteResponse(message=f"Meal plan {meal_plan_id} already deleted")
         resp.raise_for_status()
-        return {"message": f"Meal plan {meal_plan_id} deleted successfully"}
+        return TandoorDeleteResponse(message=f"Meal plan {meal_plan_id} deleted successfully")
 
 
 # ---------------------------------------------------------------------------
@@ -303,9 +495,10 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict[str, Any]]:
 mcp = FastMCP(
     "Tandoor",
     instructions=(
-        "MCP server for managing meal plans via Tandoor Recipes. "
+        "MCP server for managing meal plans and recipes via Tandoor Recipes. "
         "Use the provided tools to list meal types, search recipes, "
-        "and create, read, update, or delete meal plan entries."
+        "import recipes from URLs, and create, read, update, or delete "
+        "meal plan entries."
     ),
     lifespan=lifespan,
 )
@@ -317,7 +510,7 @@ def _get_client(ctx: Context) -> TandoorClient:
 
 
 @mcp.tool()
-def list_meal_types(ctx: Context) -> list[dict[str, Any]]:
+def list_meal_types(ctx: Context) -> list[TandoorMealType]:  # noqa: D103
     """List all meal types configured in Tandoor (e.g. breakfast, lunch, dinner).
 
     Use the returned IDs when creating or updating meal plan entries.
@@ -330,14 +523,51 @@ def list_meal_types(ctx: Context) -> list[dict[str, Any]]:
 def search_recipes(
     ctx: Context,
     query: str | None = None,
-) -> list[dict[str, Any]]:
-    """Search recipes in Tandoor by name.
+    keywords: list[int] | None = None,
+    foods: list[int] | None = None,
+    rating: int | None = None,
+    internal: bool | None = None,
+    random: bool = False,
+    page: int = 1,
+    page_size: int = 25,
+) -> PaginatedResponse[TandoorRecipeOverview]:
+    """Search recipes in Tandoor with optional filters.
 
     Args:
         query: Optional search string to filter recipes by name.
+        keywords: Optional list of keyword IDs to filter by (OR logic).
+        foods: Optional list of food IDs to filter by (OR logic).
+        rating: Optional minimum rating to filter by.
+        internal: If True, only return internal (non-external) recipes.
+        random: If True, return results in random order.
+        page: Page number for pagination (default 1).
+        page_size: Number of results per page (default 25, max varies by server).
     """
     client = _get_client(ctx)
-    return client.search_recipes(query=query)
+    return client.search_recipes(
+        query=query,
+        keywords=keywords,
+        foods=foods,
+        rating=rating,
+        internal=internal,
+        random=random,
+        page=page,
+        page_size=page_size,
+    )
+
+
+@mcp.tool()
+def import_recipe_from_url(ctx: Context, url: str) -> TandoorRecipeOverview | TandoorError:
+    """Import a recipe from a URL into Tandoor.
+
+    Scrapes the recipe from the given URL using Tandoor's built-in parser,
+    creates it as a new recipe, and downloads the recipe image if available.
+
+    Args:
+        url: The URL of the recipe page to import (e.g. from a food blog).
+    """
+    client = _get_client(ctx)
+    return client.import_recipe_from_url(url)
 
 
 @mcp.tool()
@@ -346,7 +576,7 @@ def list_meal_plans(
     from_date: str | None = None,
     to_date: str | None = None,
     query: str | None = None,
-) -> list[dict[str, Any]]:
+) -> list[TandoorMealPlan]:
     """List meal plan entries within a date range, optionally filtered by title.
 
     Args:
@@ -361,7 +591,7 @@ def list_meal_plans(
 
 
 @mcp.tool()
-def get_meal_plan(ctx: Context, meal_plan_id: int) -> dict[str, Any]:
+def get_meal_plan(ctx: Context, meal_plan_id: int) -> TandoorMealPlan | TandoorError:
     """Get full details of a single meal plan entry.
 
     Args:
@@ -370,7 +600,7 @@ def get_meal_plan(ctx: Context, meal_plan_id: int) -> dict[str, Any]:
     client = _get_client(ctx)
     result = client.get_meal_plan(meal_plan_id)
     if result is None:
-        return {"error": f"Meal plan {meal_plan_id} not found"}
+        return TandoorError(error=f"Meal plan {meal_plan_id} not found")
     return result
 
 
@@ -384,7 +614,7 @@ def create_meal_plan(
     recipe_id: int | None = None,
     servings: float = 1.0,
     note: str = "",
-) -> dict[str, Any]:
+) -> TandoorMealPlan | TandoorError:
     """Create a new meal plan entry in Tandoor.
 
     Args:
@@ -419,7 +649,7 @@ def update_meal_plan(
     recipe_id: int | None = None,
     servings: float | None = None,
     note: str | None = None,
-) -> dict[str, Any]:
+) -> TandoorMealPlan | TandoorError:
     """Update an existing meal plan entry. Only provided fields are changed.
 
     Args:
@@ -446,7 +676,7 @@ def update_meal_plan(
 
 
 @mcp.tool()
-def delete_meal_plan(ctx: Context, meal_plan_id: int) -> dict[str, Any]:
+def delete_meal_plan(ctx: Context, meal_plan_id: int) -> TandoorDeleteResponse:
     """Delete a meal plan entry from Tandoor.
 
     Args:

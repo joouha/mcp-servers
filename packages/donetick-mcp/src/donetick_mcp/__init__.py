@@ -5,8 +5,6 @@ An MCP server for managing household chores via the Donetick API.
 
 from __future__ import annotations
 
-from __future__ import annotations
-
 import logging
 import os
 from collections.abc import AsyncIterator
@@ -16,9 +14,8 @@ from enum import Enum
 from typing import Any
 
 import httpx
-import msgspec
 from fastmcp import Context, FastMCP
-from msgspec import UNSET, UnsetType
+from pydantic import BaseModel, ConfigDict, Field
 
 log = logging.getLogger(__name__)
 
@@ -57,7 +54,18 @@ class Status(int, Enum):
     PAUSED = 2
 
 
-class FrequencyMetadata(msgspec.Struct, rename="camel", omit_defaults=True):
+def _to_camel(s: str) -> str:
+    """Convert snake_case to camelCase."""
+    parts = s.split("_")
+    return parts[0] + "".join(p.capitalize() for p in parts[1:])
+
+
+_camel_config = ConfigDict(alias_generator=_to_camel, populate_by_name=True)
+
+
+class FrequencyMetadata(BaseModel):
+    model_config = _camel_config
+
     days: list[str] | None = None
     months: list[str] | None = None
     unit: str | None = None
@@ -65,23 +73,29 @@ class FrequencyMetadata(msgspec.Struct, rename="camel", omit_defaults=True):
     timezone: str = ""
 
 
-class NotificationMetadata(msgspec.Struct, rename="camel", omit_defaults=True):
-    due_date: bool | UnsetType = UNSET
-    nagging: bool | UnsetType = UNSET
-    predue: bool | UnsetType = UNSET
-    completion: bool | UnsetType = UNSET
-    circle_group: bool | UnsetType = UNSET
+class NotificationMetadata(BaseModel):
+    model_config = _camel_config
+
+    due_date: bool | None = None
+    nagging: bool | None = None
+    predue: bool | None = None
+    completion: bool | None = None
+    circle_group: bool | None = None
     circle_group_id: int | None = None
 
 
-class Label(msgspec.Struct, rename="camel"):
+class Label(BaseModel):
+    model_config = _camel_config
+
     id: int
     name: str
     color: str
-    created_by: int | UnsetType = UNSET
+    created_by: int | None = None
 
 
-class SubTask(msgspec.Struct, rename="camel", omit_defaults=True):
+class SubTask(BaseModel):
+    model_config = _camel_config
+
     id: int
     order_id: int
     name: str
@@ -90,11 +104,15 @@ class SubTask(msgspec.Struct, rename="camel", omit_defaults=True):
     parent_id: int | None = None
 
 
-class ChoreAssignees(msgspec.Struct, rename="camel"):
+class ChoreAssignees(BaseModel):
+    model_config = _camel_config
+
     user_id: int
 
 
-class DonetickChore(msgspec.Struct, rename="camel", omit_defaults=True, kw_only=True):
+class DonetickChore(BaseModel):
+    model_config = _camel_config
+
     id: int | None = None
     name: str
     frequency: int = 0
@@ -103,20 +121,20 @@ class DonetickChore(msgspec.Struct, rename="camel", omit_defaults=True, kw_only=
     next_due_date: datetime | None = None
     is_rolling: bool = False
     assigned_to: int | None = None
-    assignees: list[ChoreAssignees] = msgspec.field(default_factory=list)
+    assignees: list[ChoreAssignees] = Field(default_factory=list)
     assign_strategy: AssignmentStrategy = AssignmentStrategy.ROUND_ROBIN
     is_active: bool = True
     notification: bool = True
-    notification_metadata: NotificationMetadata | None = msgspec.field(
+    notification_metadata: NotificationMetadata | None = Field(
         default_factory=NotificationMetadata
     )
     labels: str | None = None
     labels_v2: list[Label] | None = None
     circle_id: int = 0
-    created_at: datetime | UnsetType = UNSET
-    updated_at: datetime | UnsetType = UNSET
-    created_by: int | UnsetType = UNSET
-    updated_by: int | UnsetType = UNSET
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+    created_by: int | None = None
+    updated_by: int | None = None
     status: Status = Status.NO_STATUS
     priority: int = 0
     completion_window: int | None = None
@@ -125,13 +143,15 @@ class DonetickChore(msgspec.Struct, rename="camel", omit_defaults=True, kw_only=
     sub_tasks: list[SubTask] | None = None
 
 
-class ChoreReq(msgspec.Struct, rename="camel"):
+class ChoreReq(BaseModel):
+    model_config = _camel_config
+
     name: str
     assign_strategy: AssignmentStrategy = AssignmentStrategy.ROUND_ROBIN
     frequency_type: FrequencyType = FrequencyType.ONCE
     id: int | None = None
     due_date: str = ""
-    assignees: list[ChoreAssignees] = msgspec.field(default_factory=list)
+    assignees: list[ChoreAssignees] = Field(default_factory=list)
     assigned_to: int = 0
     is_rolling: bool = False
     is_active: bool = True
@@ -146,19 +166,98 @@ class ChoreReq(msgspec.Struct, rename="camel"):
     sub_tasks: list[SubTask] | None = None
 
 
-class AuthResp(msgspec.Struct, rename="camel"):
+class AuthResp(BaseModel):
+    model_config = _camel_config
+
     code: int = 0
     message: str = ""
-    token: str | UnsetType = UNSET
-    expire: datetime | UnsetType = UNSET
+    token: str | None = None
+    expire: datetime | None = None
 
 
-class UserProfile(msgspec.Struct, rename="camel"):
+class UserProfile(BaseModel):
+    model_config = _camel_config
+
     id: int
     display_name: str = ""
     email: str = ""
     username: str = ""
     circle_id: int = 0
+
+
+# ---------------------------------------------------------------------------
+# Tool response models
+# ---------------------------------------------------------------------------
+
+
+class ChoreSummary(BaseModel):
+    """Compact chore summary for list/search results."""
+
+    id: int | None = None
+    name: str
+    due: str | None = None
+    active: bool = True
+    assigned_to: int = 0
+    frequency_type: str = ""
+    priority: int = 0
+
+
+class ChoreDetail(BaseModel):
+    """Full chore detail returned by get_chore."""
+
+    id: int | None = None
+    name: str
+    description: str | None = None
+    due: str | None = None
+    active: bool = True
+    assigned_to: int = 0
+    assignees: list[int] = Field(default_factory=list)
+    assign_strategy: str = ""
+    frequency: int = 0
+    frequency_type: str = ""
+    frequency_metadata: dict[str, Any] | None = None
+    is_rolling: bool = False
+    priority: int = 0
+    points: int | None = None
+    status: int = 0
+    labels: list[str] = Field(default_factory=list)
+    sub_tasks: list[dict[str, Any]] = Field(default_factory=list)
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+class DonetickError(BaseModel):
+    """Structured error response."""
+
+    error: str
+
+
+class ChoreCreatedResponse(BaseModel):
+    """Response after creating a chore."""
+
+    id: int | None = None
+    message: str
+
+
+class ChoreUpdatedResponse(BaseModel):
+    """Response after updating a chore."""
+
+    message: str
+
+
+class ChoreCompletedResponse(BaseModel):
+    """Response after completing a chore."""
+
+    message: str
+    chore: ChoreSummary
+    rescheduled: bool = False
+    next_due: str | None = None
+
+
+class ChoreDeletedResponse(BaseModel):
+    """Response after archiving a chore."""
+
+    message: str
 
 
 # ---------------------------------------------------------------------------
@@ -248,7 +347,7 @@ class DonetickClient:
 
     def get_profile(self) -> UserProfile:
         data = self._get("./api/v1/users/profile")
-        return msgspec.convert(data.get("res", {}), type=UserProfile)
+        return UserProfile.model_validate(data.get("res", {}))
 
     def get_users(self) -> list[dict[str, Any]]:
         data = self._get("./api/v1/users/")
@@ -256,26 +355,26 @@ class DonetickClient:
 
     def list_chores(self) -> list[DonetickChore]:
         data = self._get("./api/v1/chores/")
-        return msgspec.convert(data.get("res", []), type=list[DonetickChore])
+        return [DonetickChore.model_validate(c) for c in data.get("res", [])]
 
     def get_chore(self, chore_id: int) -> DonetickChore | None:
         data = self._get(f"./api/v1/chores/{chore_id}")
         if "error" in data:
             return None
-        return msgspec.convert(data.get("res", {}), type=DonetickChore)
+        return DonetickChore.model_validate(data.get("res", {}))
 
     def create_chore(self, req: ChoreReq) -> int:
-        req_json = msgspec.to_builtins(req)
+        req_json = req.model_dump(mode="json", by_alias=True, exclude_none=True)
         data = self._post("./api/v1/chores/", json=req_json)
         return data.get("res")
 
     def update_chore(self, req: ChoreReq) -> None:
-        req_json = msgspec.to_builtins(req)
+        req_json = req.model_dump(mode="json", by_alias=True, exclude_none=True)
         self._put("./api/v1/chores/", json=req_json)
 
     def complete_chore(self, chore_id: int, note: str | None = None) -> DonetickChore:
         data = self._post(f"./api/v1/chores/{chore_id}/do", json={"note": note})
-        return msgspec.convert(data.get("res", {}), type=DonetickChore)
+        return DonetickChore.model_validate(data.get("res", {}))
 
     def archive_chore(self, chore_id: int) -> None:
         self._put(f"./api/v1/chores/{chore_id}/archive")
@@ -286,53 +385,49 @@ class DonetickClient:
 # ---------------------------------------------------------------------------
 
 
-def _chore_summary(chore: DonetickChore) -> dict[str, Any]:
-    """Return a compact summary dict for list/search results."""
-    return {
-        "id": chore.id,
-        "name": chore.name,
-        "due": chore.next_due_date.isoformat() if chore.next_due_date else None,
-        "active": chore.is_active,
-        "assigned_to": chore.assigned_to or 0,
-        "frequency_type": chore.frequency_type.value,
-        "priority": chore.priority,
-    }
+def _chore_summary(chore: DonetickChore) -> ChoreSummary:
+    """Return a compact summary for list/search results."""
+    return ChoreSummary(
+        id=chore.id,
+        name=chore.name,
+        due=chore.next_due_date.isoformat() if chore.next_due_date else None,
+        active=chore.is_active,
+        assigned_to=chore.assigned_to or 0,
+        frequency_type=chore.frequency_type.value,
+        priority=chore.priority,
+    )
 
 
-def _chore_detail(chore: DonetickChore) -> dict[str, Any]:
-    """Return a full detail dict for a single chore."""
-    return {
-        "id": chore.id,
-        "name": chore.name,
-        "description": chore.description,
-        "due": chore.next_due_date.isoformat() if chore.next_due_date else None,
-        "active": chore.is_active,
-        "assigned_to": chore.assigned_to or 0,
-        "assignees": [a.user_id for a in chore.assignees],
-        "assign_strategy": chore.assign_strategy.value,
-        "frequency": chore.frequency,
-        "frequency_type": chore.frequency_type.value,
-        "frequency_metadata": msgspec.to_builtins(chore.frequency_metadata)
+def _chore_detail(chore: DonetickChore) -> ChoreDetail:
+    """Return full detail for a single chore."""
+    return ChoreDetail(
+        id=chore.id,
+        name=chore.name,
+        description=chore.description,
+        due=chore.next_due_date.isoformat() if chore.next_due_date else None,
+        active=chore.is_active,
+        assigned_to=chore.assigned_to or 0,
+        assignees=[a.user_id for a in chore.assignees],
+        assign_strategy=chore.assign_strategy.value,
+        frequency=chore.frequency,
+        frequency_type=chore.frequency_type.value,
+        frequency_metadata=chore.frequency_metadata.model_dump(by_alias=True)
         if chore.frequency_metadata
         else None,
-        "is_rolling": chore.is_rolling,
-        "priority": chore.priority,
-        "points": chore.points,
-        "status": chore.status.value,
-        "labels": [l.name for l in chore.labels_v2] if chore.labels_v2 else [],
-        "sub_tasks": [
+        is_rolling=chore.is_rolling,
+        priority=chore.priority,
+        points=chore.points,
+        status=chore.status.value,
+        labels=[l.name for l in chore.labels_v2] if chore.labels_v2 else [],
+        sub_tasks=[
             {"id": s.id, "name": s.name, "completed": s.completed_at is not None}
             for s in chore.sub_tasks
         ]
         if chore.sub_tasks
         else [],
-        "created_at": chore.created_at.isoformat()
-        if not isinstance(chore.created_at, UnsetType)
-        else None,
-        "updated_at": chore.updated_at.isoformat()
-        if not isinstance(chore.updated_at, UnsetType)
-        else None,
-    }
+        created_at=chore.created_at.isoformat() if chore.created_at else None,
+        updated_at=chore.updated_at.isoformat() if chore.updated_at else None,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -378,7 +473,7 @@ def _get_client(ctx: Context) -> DonetickClient:
 
 
 @mcp.tool()
-def list_chores(ctx: Context) -> list[dict[str, Any]]:
+def list_chores(ctx: Context) -> list[ChoreSummary]:
     """List all chores with summary info (id, name, due date, status)."""
     client = _get_client(ctx)
     chores = client.list_chores()
@@ -386,7 +481,7 @@ def list_chores(ctx: Context) -> list[dict[str, Any]]:
 
 
 @mcp.tool()
-def search_chores(ctx: Context, query: str) -> list[dict[str, Any]]:
+def search_chores(ctx: Context, query: str) -> list[ChoreSummary]:
     """Search chores by name or description (case-insensitive substring match).
 
     Args:
@@ -404,7 +499,7 @@ def search_chores(ctx: Context, query: str) -> list[dict[str, Any]]:
 
 
 @mcp.tool()
-def get_chore(ctx: Context, chore_id: int) -> dict[str, Any]:
+def get_chore(ctx: Context, chore_id: int) -> ChoreDetail | DonetickError:
     """Get full details of a single chore.
 
     Args:
@@ -413,7 +508,7 @@ def get_chore(ctx: Context, chore_id: int) -> dict[str, Any]:
     client = _get_client(ctx)
     chore = client.get_chore(chore_id)
     if chore is None:
-        return {"error": f"Chore {chore_id} not found"}
+        return DonetickError(error=f"Chore {chore_id} not found")
     return _chore_detail(chore)
 
 
@@ -431,7 +526,7 @@ def create_chore(
     is_rolling: bool = False,
     priority: int = 0,
     points: int | None = None,
-) -> dict[str, Any]:
+) -> ChoreCreatedResponse:
     """Create a new chore.
 
     Args:
@@ -462,7 +557,9 @@ def create_chore(
         points=points,
     )
     chore_id = client.create_chore(req)
-    return {"id": chore_id, "message": f"Chore '{name}' created successfully"}
+    return ChoreCreatedResponse(
+        id=chore_id, message=f"Chore '{name}' created successfully"
+    )
 
 
 @mcp.tool()
@@ -481,7 +578,7 @@ def update_chore(
     priority: int | None = None,
     points: int | None = None,
     is_active: bool | None = None,
-) -> dict[str, Any]:
+) -> ChoreUpdatedResponse | DonetickError:
     """Update an existing chore. Only provided fields are changed.
 
     Args:
@@ -502,10 +599,15 @@ def update_chore(
     client = _get_client(ctx)
     existing = client.get_chore(chore_id)
     if existing is None:
-        return {"error": f"Chore {chore_id} not found"}
+        return DonetickError(error=f"Chore {chore_id} not found")
 
     # Build the request from the existing chore, overriding supplied fields
-    req = msgspec.convert(existing, type=ChoreReq, from_attributes=True)
+    existing_data = existing.model_dump()
+    # Map DonetickChore's next_due_date to ChoreReq's due_date
+    existing_data["due_date"] = (
+        existing.next_due_date.isoformat() if existing.next_due_date else ""
+    )
+    req = ChoreReq.model_validate(existing_data)
 
     if name is not None:
         req.name = name
@@ -533,13 +635,13 @@ def update_chore(
         req.is_active = is_active
 
     client.update_chore(req)
-    return {"message": f"Chore {chore_id} updated successfully"}
+    return ChoreUpdatedResponse(message=f"Chore {chore_id} updated successfully")
 
 
 @mcp.tool()
 def complete_chore(
     ctx: Context, chore_id: int, note: str | None = None
-) -> dict[str, Any]:
+) -> ChoreCompletedResponse:
     """Mark a chore as done. Recurring chores will auto-reschedule.
 
     Args:
@@ -548,18 +650,17 @@ def complete_chore(
     """
     client = _get_client(ctx)
     updated = client.complete_chore(chore_id, note=note)
-    result = {
-        "message": f"Chore {chore_id} marked as complete",
-        "chore": _chore_summary(updated),
-    }
-    if updated.is_active and updated.next_due_date:
-        result["rescheduled"] = True
-        result["next_due"] = updated.next_due_date.isoformat()
-    return result
+    rescheduled = bool(updated.is_active and updated.next_due_date)
+    return ChoreCompletedResponse(
+        message=f"Chore {chore_id} marked as complete",
+        chore=_chore_summary(updated),
+        rescheduled=rescheduled,
+        next_due=updated.next_due_date.isoformat() if rescheduled else None,
+    )
 
 
 @mcp.tool()
-def delete_chore(ctx: Context, chore_id: int) -> dict[str, Any]:
+def delete_chore(ctx: Context, chore_id: int) -> ChoreDeletedResponse:
     """Archive (delete) a chore.
 
     Args:
@@ -567,7 +668,7 @@ def delete_chore(ctx: Context, chore_id: int) -> dict[str, Any]:
     """
     client = _get_client(ctx)
     client.archive_chore(chore_id)
-    return {"message": f"Chore {chore_id} archived successfully"}
+    return ChoreDeletedResponse(message=f"Chore {chore_id} archived successfully")
 
 
 # ---------------------------------------------------------------------------

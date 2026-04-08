@@ -16,9 +16,73 @@ from zoneinfo import ZoneInfo
 import caldav
 from caldav import get_davclient
 from caldav.lib.error import NotFoundError
+from pydantic import BaseModel, Field
 from fastmcp import Context, FastMCP
 
 log = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Pydantic models
+# ---------------------------------------------------------------------------
+
+
+class CalendarInfo(BaseModel):
+    """A calendar available on the CalDAV server."""
+
+    name: str
+    url: str
+
+
+class EventSummary(BaseModel):
+    """Compact event summary for list/search results."""
+
+    uid: str
+    summary: str = ""
+    start: str | None = None
+    end: str | None = None
+    recurring: bool = False
+
+
+class EventDetail(BaseModel):
+    """Full event detail returned by get_event."""
+
+    uid: str
+    summary: str = ""
+    description: str = ""
+    location: str = ""
+    start: str | None = None
+    end: str | None = None
+    duration_minutes: int | None = None
+    recurring: bool = False
+    recurrence: str | None = None
+    attendees: list[str] = Field(default_factory=list)
+    organizer: str | None = None
+
+
+class EventCreatedResponse(BaseModel):
+    """Response after creating an event."""
+
+    uid: str
+    message: str
+
+
+class EventUpdatedResponse(BaseModel):
+    """Response after updating an event."""
+
+    message: str
+
+
+class EventDeletedResponse(BaseModel):
+    """Response after deleting an event."""
+
+    message: str
+
+
+class CalDAVError(BaseModel):
+    """Structured error response."""
+
+    error: str
 
 
 # ---------------------------------------------------------------------------
@@ -85,19 +149,19 @@ class CalDAVClient:
                 self._calendar = calendars[0]
         return self._calendar
 
-    def list_calendars(self) -> list[dict[str, Any]]:
+    def list_calendars(self) -> list[CalendarInfo]:
         """List all calendars available on the server."""
         principal = self.client.get_principal()
         calendars = principal.get_calendars()
         return [
-            {
-                "name": str(cal.get_display_name()),
-                "url": str(cal.url),
-            }
+            CalendarInfo(
+                name=str(cal.get_display_name()),
+                url=str(cal.url),
+            )
             for cal in calendars
         ]
 
-    def list_events(self) -> list[dict[str, Any]]:
+    def list_events(self) -> list[EventSummary]:
         """List events from the configured calendar (±1 year from now)."""
         now = datetime.now(tz=ZoneInfo(self.timezone))
         start = now - timedelta(days=365)
@@ -108,7 +172,7 @@ class CalDAVClient:
         self,
         start: datetime | None = None,
         end: datetime | None = None,
-    ) -> list[dict[str, Any]]:
+    ) -> list[EventSummary]:
         """Search events within a date range."""
         if start is None:
             start = datetime.now(tz=ZoneInfo(self.timezone))
@@ -123,14 +187,14 @@ class CalDAVClient:
             event=True,
             expand=True,
         )
-        results = []
+        results: list[EventSummary] = []
         for event in caldav_events:
             ical = event.get_icalendar_component()
             if ical:
                 results.append(self._ical_to_summary(ical))
         return results
 
-    def get_event(self, uid: str) -> dict[str, Any] | None:
+    def get_event(self, uid: str) -> EventDetail | None:
         """Get full details of a single event by UID."""
         try:
             caldav_event = self.calendar.get_event_by_uid(uid)
@@ -152,7 +216,7 @@ class CalDAVClient:
         location: str | None = None,
         recurrence: str | None = None,
         attendees: list[str] | None = None,
-    ) -> dict[str, Any]:
+    ) -> EventCreatedResponse:
         """Create a new event on the calendar using keyword arguments."""
         kwargs: dict[str, Any] = {
             "summary": summary,
@@ -172,10 +236,10 @@ class CalDAVClient:
 
         event = self.calendar.add_event(**kwargs)
         uid = str(event.get_icalendar_component().get("uid", ""))
-        return {
-            "uid": uid,
-            "message": f"Event '{summary}' created successfully",
-        }
+        return EventCreatedResponse(
+            uid=uid,
+            message=f"Event '{summary}' created successfully",
+        )
 
     def update_event(
         self,
@@ -188,12 +252,12 @@ class CalDAVClient:
         location: str | None = None,
         recurrence: str | None = None,
         attendees: list[str] | None = None,
-    ) -> dict[str, Any]:
+    ) -> EventUpdatedResponse | CalDAVError:
         """Update an existing event on the calendar."""
         try:
             caldav_event = self.calendar.get_event_by_uid(uid)
         except NotFoundError:
-            return {"error": f"Event {uid} not found"}
+            return CalDAVError(error=f"Event {uid} not found")
 
         with caldav_event.edit_icalendar_component() as ical:
             if summary is not None:
@@ -242,16 +306,16 @@ class CalDAVClient:
                         log.warning("Invalid recurrence rule: %s", recurrence)
 
         caldav_event.save()
-        return {"message": f"Event {uid} updated successfully"}
+        return EventUpdatedResponse(message=f"Event {uid} updated successfully")
 
-    def delete_event(self, uid: str) -> dict[str, Any]:
+    def delete_event(self, uid: str) -> EventDeletedResponse | CalDAVError:
         """Delete an event from the calendar."""
         try:
             caldav_event = self.calendar.get_event_by_uid(uid)
             caldav_event.delete()
-            return {"message": f"Event {uid} deleted successfully"}
+            return EventDeletedResponse(message=f"Event {uid} deleted successfully")
         except NotFoundError:
-            return {"error": f"Event {uid} not found (already deleted?)"}
+            return CalDAVError(error=f"Event {uid} not found (already deleted?)")
         except Exception as e:
             log.error("Error deleting CalDAV event UID %s: %s", uid, e)
             raise
@@ -268,24 +332,24 @@ class CalDAVClient:
             return value.isoformat()
         return str(value)
 
-    def _ical_to_summary(self, ical: Any) -> dict[str, Any]:
-        """Convert an icalendar Event component to a compact summary dict."""
+    def _ical_to_summary(self, ical: Any) -> EventSummary:
+        """Convert an icalendar Event component to a compact summary."""
         uid = str(ical.get("uid", ""))
         summary_val = str(ical.get("summary", ""))
 
         start = ical.decoded("dtstart") if "dtstart" in ical else None
         end = ical.decoded("dtend") if "dtend" in ical else None
 
-        return {
-            "uid": uid,
-            "summary": summary_val,
-            "start": self._parse_dt(start),
-            "end": self._parse_dt(end),
-            "recurring": "rrule" in ical,
-        }
+        return EventSummary(
+            uid=uid,
+            summary=summary_val,
+            start=self._parse_dt(start),
+            end=self._parse_dt(end),
+            recurring="rrule" in ical,
+        )
 
-    def _ical_to_detail(self, ical: Any) -> dict[str, Any]:
-        """Convert an icalendar Event component to a full detail dict."""
+    def _ical_to_detail(self, ical: Any) -> EventDetail:
+        """Convert an icalendar Event component to full detail."""
         uid = str(ical.get("uid", ""))
         summary_val = str(ical.get("summary", ""))
         description_val = str(ical.get("description", ""))
@@ -305,7 +369,7 @@ class CalDAVClient:
         if rrule := ical.get("rrule"):
             recurrence = rrule.to_ical().decode()
 
-        attendees = []
+        attendees: list[str] = []
         raw_attendees = ical.get("attendee", [])
         # Single attendee comes back as a scalar, not a list
         if not isinstance(raw_attendees, list):
@@ -320,19 +384,19 @@ class CalDAVClient:
         if org := ical.get("organizer"):
             _, _, organizer = str(org).partition(":")
 
-        return {
-            "uid": uid,
-            "summary": summary_val,
-            "description": description_val,
-            "location": location_val,
-            "start": self._parse_dt(start),
-            "end": self._parse_dt(end),
-            "duration_minutes": duration,
-            "recurring": "rrule" in ical,
-            "recurrence": recurrence,
-            "attendees": attendees,
-            "organizer": organizer,
-        }
+        return EventDetail(
+            uid=uid,
+            summary=summary_val,
+            description=description_val,
+            location=location_val,
+            start=self._parse_dt(start),
+            end=self._parse_dt(end),
+            duration_minutes=duration,
+            recurring="rrule" in ical,
+            recurrence=recurrence,
+            attendees=attendees,
+            organizer=organizer,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -387,7 +451,7 @@ def _get_client(ctx: Context) -> CalDAVClient:
 
 
 @mcp.tool()
-def list_events(ctx: Context) -> list[dict[str, Any]]:
+def list_events(ctx: Context) -> list[EventSummary]:
     """List all events on the configured calendar with summary info."""
     client = _get_client(ctx)
     return client.list_events()
@@ -399,7 +463,7 @@ def search_events(
     start: str | None = None,
     end: str | None = None,
     query: str | None = None,
-) -> list[dict[str, Any]]:
+) -> list[EventSummary]:
     """Search events within a date range and/or by text query.
 
     Args:
@@ -417,13 +481,13 @@ def search_events(
 
     if query:
         q = query.lower()
-        results = [r for r in results if q in r.get("summary", "").lower()]
+        results = [r for r in results if q in r.summary.lower()]
 
     return results
 
 
 @mcp.tool()
-def get_event(ctx: Context, uid: str) -> dict[str, Any]:
+def get_event(ctx: Context, uid: str) -> EventDetail | CalDAVError:
     """Get full details of a single calendar event.
 
     Args:
@@ -432,7 +496,7 @@ def get_event(ctx: Context, uid: str) -> dict[str, Any]:
     client = _get_client(ctx)
     event = client.get_event(uid)
     if event is None:
-        return {"error": f"Event {uid} not found"}
+        return CalDAVError(error=f"Event {uid} not found")
     return event
 
 
@@ -447,7 +511,7 @@ def create_event(
     location: str | None = None,
     recurrence: str | None = None,
     attendees: list[str] | None = None,
-) -> dict[str, Any]:
+) -> EventCreatedResponse:
     """Create a new calendar event.
 
     Args:
@@ -497,7 +561,7 @@ def update_event(
     location: str | None = None,
     recurrence: str | None = None,
     attendees: list[str] | None = None,
-) -> dict[str, Any]:
+) -> EventUpdatedResponse | CalDAVError:
     """Update an existing calendar event. Only provided fields are changed.
 
     Args:
@@ -540,7 +604,7 @@ def update_event(
 
 
 @mcp.tool()
-def delete_event(ctx: Context, uid: str) -> dict[str, Any]:
+def delete_event(ctx: Context, uid: str) -> EventDeletedResponse | CalDAVError:
     """Delete a calendar event.
 
     Args:
