@@ -1,0 +1,13 @@
+[project]
+name = "joplin-mcp"
+version = "0.1.0"
+description = "An MCP server for managing notes, notebooks, and tags on a Joplin Server."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastmcp>=2.0",
+    "httpx>=0.27",
+]
+
+[project.scripts]
+joplin-mcp = "joplin_mcp:main"

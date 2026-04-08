@@ -8,6 +8,7 @@ dependencies = [
     "donetick-mcp",
     "caldav-mcp",
     "tandoor-mcp",
+    "joplin-mcp",
 ]
 
 [tool.uv.workspace]
@@ -19,3 +20,4 @@ members = [
 donetick-mcp = { workspace = true }
 caldav-mcp = { workspace = true }
 tandoor-mcp = { workspace = true }
+joplin-mcp = { workspace = true }

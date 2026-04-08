@@ -8,6 +8,7 @@ A collection of [Model Context Protocol (MCP)](https://modelcontextprotocol.io/)
 |---------|-------------|---------|
 | [caldav-mcp](packages/caldav-mcp/) | Manage calendar events via CalDAV | [Nextcloud](https://nextcloud.com/), [Radicale](https://radicale.org/), [Baikal](https://sabre.io/baikal/), etc. |
 | [donetick-mcp](packages/donetick-mcp/) | Manage household chores | [Donetick](https://donetick.com/) |
+| [joplin-mcp](packages/joplin-mcp/) | Manage notes, notebooks, and tags | [Joplin Server](https://joplinapp.org/) |
 | [tandoor-mcp](packages/tandoor-mcp/) | Manage meal plans and recipes | [Tandoor Recipes](https://tandoor.dev/) |
 
 ## Prerequisites
@@ -28,6 +29,7 @@ Each server can then be run directly:
 ```bash
 caldav-mcp
 donetick-mcp
+joplin-mcp
 tandoor-mcp
 ```
 
@@ -40,6 +42,7 @@ See the individual package READMEs for configuration details and Claude Desktop 
 ├── packages/
 │   ├── caldav-mcp/          # CalDAV calendar server
 │   ├── donetick-mcp/        # Donetick chores server
+│   ├── joplin-mcp/          # Joplin notes server
 │   └── tandoor-mcp/         # Tandoor meal planning server
 ├── pyproject.toml            # Workspace root
 └── uv.lock
@@ -52,6 +55,7 @@ Each server exposes a FastMCP app that can be tested interactively with the Fast
 ```bash
 fastmcp dev packages/caldav-mcp/src/caldav_mcp/__init__.py:mcp
 fastmcp dev packages/donetick-mcp/src/donetick_mcp/__init__.py:mcp
+fastmcp dev packages/joplin-mcp/src/joplin_mcp/__init__.py:mcp
 fastmcp dev packages/tandoor-mcp/src/tandoor_mcp/__init__.py:mcp
 ```
 
