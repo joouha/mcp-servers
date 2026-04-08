@@ -1,0 +1,15 @@
+[project]
+name = "caldav-mcp"
+version = "0.1.0"
+description = "An MCP server for managing calendar events via a CalDAV server."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "caldav>=3.1",
+    "fastmcp>=2.0",
+    "icalendar>=7.0",
+]
+
+[project.scripts]
+caldav-mcp = "caldav_mcp:main"
+

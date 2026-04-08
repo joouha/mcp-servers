@@ -1,0 +1,21 @@
+[project]
+name = "mcp-servers"
+version = "0.1.0"
+description = "A collection of custom MCP servers"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "donetick-mcp",
+    "caldav-mcp",
+    "tandoor-mcp",
+]
+
+[tool.uv.workspace]
+members = [
+    "packages/*",
+]
+
+[tool.uv.sources]
+donetick-mcp = { workspace = true }
+caldav-mcp = { workspace = true }
+tandoor-mcp = { workspace = true }
