@@ -16,7 +16,7 @@ from typing import Any
 
 import httpx
 from fastmcp import Context, FastMCP
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 log = logging.getLogger(__name__)
 
@@ -53,7 +53,10 @@ class NoteSummary(BaseModel):
     notebook_id: str = ""
     is_todo: bool = False
     updated_time: str = ""
-    preview: str = ""
+    preview: str = Field(
+        default="",
+        description="A short extract: load whole note with `get_note` before editing",
+    )
 
 
 class NoteDetail(BaseModel):

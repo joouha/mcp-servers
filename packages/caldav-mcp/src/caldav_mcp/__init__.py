@@ -56,7 +56,7 @@ class EventDetail(BaseModel):
     duration_minutes: int | None = None
     recurring: bool = False
     recurrence: str | None = None
-    attendees: list[str] = Field(default_factory=list)
+    attendees: list[str] = Field(default_factory=list, description="Participant emails")
     organizer: str | None = None
 
 
