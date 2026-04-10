@@ -221,7 +221,7 @@ def _note_template(
     share_id: str = "",
 ) -> str:
     is_shared = "1" if share_id else "0"
-    share_id_val = share_id if share_id else "\x20"
+    share_id_val = f" {share_id}" if share_id else "\x20"
     return f"""{title}
 
 {body}
@@ -249,7 +249,7 @@ encryption_cipher_text:\x20
 encryption_applied: 0
 markup_language: 1
 is_shared: {is_shared}
-share_id: {share_id_val}
+share_id:{share_id_val}
 conflict_original_id:\x20
 master_key_id:\x20
 user_data:\x20
@@ -406,9 +406,7 @@ class JoplinClient:
         if not notebook_id or not _ID_RE.match(notebook_id):
             return ""
         try:
-            resp = await self._api(
-                "GET", f"/api/items/root:/{notebook_id}.md:/content"
-            )
+            resp = await self._api("GET", f"/api/items/root:/{notebook_id}.md:/content")
             parsed = _parse_joplin_item(resp.text)
             share_id = parsed["metadata"].get("share_id", "").strip()
             if share_id:
@@ -664,7 +662,15 @@ class JoplinClient:
         body: str = "",
         notebook_id: str = "",
     ) -> NoteCreatedResponse:
-        """Create a new note."""
+        """Create a new note.
+
+        If *notebook_id* is not provided and exactly one notebook exists, the
+        note is placed in that notebook automatically.
+        """
+        if not notebook_id:
+            notebooks = await self.list_notebooks()
+            if len(notebooks) == 1:
+                notebook_id = notebooks[0].id
         note_id = uuid.uuid4().hex
         now = _now_iso()
         share_id = await self._get_share_id(notebook_id) if notebook_id else ""
