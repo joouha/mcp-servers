@@ -218,10 +218,7 @@ def _note_template(
     body: str,
     notebook_id: str,
     now: str,
-    share_id: str = "",
 ) -> str:
-    is_shared = "1" if share_id else "0"
-    share_id_val = f" {share_id}" if share_id else "\x20"
     return f"""{title}
 
 {body}
@@ -248,8 +245,8 @@ user_updated_time: {now}
 encryption_cipher_text:\x20
 encryption_applied: 0
 markup_language: 1
-is_shared: {is_shared}
-share_id:{share_id_val}
+is_shared: 0
+share_id:\x20
 conflict_original_id:\x20
 master_key_id:\x20
 user_data:\x20
@@ -305,11 +302,7 @@ def _note_tag_template(
     tag_id: str,
     tag_title: str,
     now: str,
-    share_id: str = "",
 ) -> str:
-    is_shared = "1" if share_id else "0"
-    share_id_val = share_id if share_id else ""
-    share_line = f"\nshare_id: {share_id_val}" if share_id else ""
     return f"""{tag_title}
 
 id: {nt_id}
@@ -321,7 +314,7 @@ user_created_time: {now}
 user_updated_time: {now}
 encryption_cipher_text:\x20
 encryption_applied: 0
-is_shared: {is_shared}{share_line}
+is_shared: 0
 type_: 6"""
 
 
@@ -673,10 +666,9 @@ class JoplinClient:
                 notebook_id = notebooks[0].id
         note_id = uuid.uuid4().hex
         now = _now_iso()
-        share_id = await self._get_share_id(notebook_id) if notebook_id else ""
         await self._put_item(
             note_id,
-            _note_template(note_id, title, body, notebook_id, now, share_id=share_id),
+            _note_template(note_id, title, body, notebook_id, now),
         )
         return NoteCreatedResponse(
             id=note_id, message=f"Note '{title}' created successfully"
@@ -711,15 +703,6 @@ class JoplinClient:
         meta["user_updated_time"] = now
         if notebook_id is not None:
             meta["parent_id"] = notebook_id
-
-        effective_parent = (
-            notebook_id if notebook_id is not None else meta.get("parent_id", "")
-        )
-        if not meta.get("share_id", "").strip():
-            share_id = await self._get_share_id(effective_parent)
-            if share_id:
-                meta["share_id"] = share_id
-                meta["is_shared"] = "1"
 
         content = f"{new_title}\n\n{new_body}\n\n" + "\n".join(
             f"{k}: {v}" for k, v in meta.items()
@@ -763,13 +746,6 @@ class JoplinClient:
         meta = parsed["metadata"]
         meta["updated_time"] = now
         meta["user_updated_time"] = now
-
-        if not meta.get("share_id", "").strip():
-            parent = meta.get("parent_id", "")
-            share_id = await self._get_share_id(parent)
-            if share_id:
-                meta["share_id"] = share_id
-                meta["is_shared"] = "1"
 
         content = f"{parsed['title']}\n\n{new_body}\n\n" + "\n".join(
             f"{k}: {v}" for k, v in meta.items()
@@ -912,15 +888,9 @@ class JoplinClient:
 
         nt_id = uuid.uuid4().hex
         now = _now_iso()
-        share_id = ""
-        note_parent = note.get("parent_id", "")
-        if note_parent:
-            share_id = await self._get_share_id(note_parent)
         await self._put_item(
             nt_id,
-            _note_tag_template(
-                nt_id, note_id, tag_id, tag["title"], now, share_id=share_id
-            ),
+            _note_tag_template(nt_id, note_id, tag_id, tag["title"], now),
         )
         return TagAddedResponse(
             message=(f"Tag '{tag['title']}' added to note '{note['title']}'")
