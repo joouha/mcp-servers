@@ -218,7 +218,10 @@ def _note_template(
     body: str,
     notebook_id: str,
     now: str,
+    share_id: str = "",
 ) -> str:
+    is_shared = "1" if share_id else "0"
+    share_id_val = share_id if share_id else "\x20"
     return f"""{title}
 
 {body}
@@ -245,8 +248,8 @@ user_updated_time: {now}
 encryption_cipher_text:\x20
 encryption_applied: 0
 markup_language: 1
-is_shared: 0
-share_id:\x20
+is_shared: {is_shared}
+share_id: {share_id_val}
 conflict_original_id:\x20
 master_key_id:\x20
 user_data:\x20
@@ -259,7 +262,10 @@ def _folder_template(
     title: str,
     parent_id: str,
     now: str,
+    share_id: str = "",
 ) -> str:
+    is_shared = "1" if share_id else "0"
+    share_id_val = share_id if share_id else "\x20"
     return f"""{title}
 
 id: {folder_id}
@@ -270,8 +276,8 @@ user_created_time: {now}
 user_updated_time: {now}
 encryption_cipher_text:\x20
 encryption_applied: 0
-is_shared: 0
-share_id:\x20
+is_shared: {is_shared}
+share_id: {share_id_val}
 master_key_id:\x20
 icon:\x20
 deleted_time: 0
@@ -299,7 +305,11 @@ def _note_tag_template(
     tag_id: str,
     tag_title: str,
     now: str,
+    share_id: str = "",
 ) -> str:
+    is_shared = "1" if share_id else "0"
+    share_id_val = share_id if share_id else ""
+    share_line = f"\nshare_id: {share_id_val}" if share_id else ""
     return f"""{tag_title}
 
 id: {nt_id}
@@ -311,7 +321,7 @@ user_created_time: {now}
 user_updated_time: {now}
 encryption_cipher_text:\x20
 encryption_applied: 0
-is_shared: 0
+is_shared: {is_shared}{share_line}
 type_: 6"""
 
 
@@ -391,6 +401,25 @@ class JoplinClient:
             headers={"Content-Type": "application/octet-stream"},
         )
 
+    async def _get_share_id(self, notebook_id: str) -> str:
+        """Return the share_id of a notebook, walking up the parent chain."""
+        if not notebook_id or not _ID_RE.match(notebook_id):
+            return ""
+        try:
+            resp = await self._api(
+                "GET", f"/api/items/root:/{notebook_id}.md:/content"
+            )
+            parsed = _parse_joplin_item(resp.text)
+            share_id = parsed["metadata"].get("share_id", "").strip()
+            if share_id:
+                return share_id
+            parent = parsed.get("parent_id", "")
+            if parent and _ID_RE.match(parent):
+                return await self._get_share_id(parent)
+        except Exception:
+            log.debug("Failed to get share_id for %s", notebook_id)
+        return ""
+
     async def _fetch_all_items(self) -> list[dict[str, Any]]:
         """Paginate through all children of the root folder."""
         all_items: list[dict[str, Any]] = []
@@ -464,7 +493,10 @@ class JoplinClient:
         """Create a new notebook."""
         nb_id = uuid.uuid4().hex
         now = _now_iso()
-        await self._put_item(nb_id, _folder_template(nb_id, title, parent_id, now))
+        share_id = await self._get_share_id(parent_id) if parent_id else ""
+        await self._put_item(
+            nb_id, _folder_template(nb_id, title, parent_id, now, share_id=share_id)
+        )
         return NotebookCreatedResponse(
             id=nb_id, message=f"Notebook '{title}' created successfully"
         )
@@ -497,6 +529,15 @@ class JoplinClient:
         meta["user_updated_time"] = now
         if parent_id is not None:
             meta["parent_id"] = parent_id
+
+        effective_parent = (
+            parent_id if parent_id is not None else meta.get("parent_id", "")
+        )
+        if not meta.get("share_id", "").strip():
+            share_id = await self._get_share_id(effective_parent)
+            if share_id:
+                meta["share_id"] = share_id
+                meta["is_shared"] = "1"
 
         content = f"{new_title}\n\n" + "\n".join(f"{k}: {v}" for k, v in meta.items())
         await self._put_item(notebook_id, content)
@@ -626,8 +667,10 @@ class JoplinClient:
         """Create a new note."""
         note_id = uuid.uuid4().hex
         now = _now_iso()
+        share_id = await self._get_share_id(notebook_id) if notebook_id else ""
         await self._put_item(
-            note_id, _note_template(note_id, title, body, notebook_id, now)
+            note_id,
+            _note_template(note_id, title, body, notebook_id, now, share_id=share_id),
         )
         return NoteCreatedResponse(
             id=note_id, message=f"Note '{title}' created successfully"
@@ -662,6 +705,15 @@ class JoplinClient:
         meta["user_updated_time"] = now
         if notebook_id is not None:
             meta["parent_id"] = notebook_id
+
+        effective_parent = (
+            notebook_id if notebook_id is not None else meta.get("parent_id", "")
+        )
+        if not meta.get("share_id", "").strip():
+            share_id = await self._get_share_id(effective_parent)
+            if share_id:
+                meta["share_id"] = share_id
+                meta["is_shared"] = "1"
 
         content = f"{new_title}\n\n{new_body}\n\n" + "\n".join(
             f"{k}: {v}" for k, v in meta.items()
@@ -705,6 +757,13 @@ class JoplinClient:
         meta = parsed["metadata"]
         meta["updated_time"] = now
         meta["user_updated_time"] = now
+
+        if not meta.get("share_id", "").strip():
+            parent = meta.get("parent_id", "")
+            share_id = await self._get_share_id(parent)
+            if share_id:
+                meta["share_id"] = share_id
+                meta["is_shared"] = "1"
 
         content = f"{parsed['title']}\n\n{new_body}\n\n" + "\n".join(
             f"{k}: {v}" for k, v in meta.items()
@@ -847,9 +906,15 @@ class JoplinClient:
 
         nt_id = uuid.uuid4().hex
         now = _now_iso()
+        share_id = ""
+        note_parent = note.get("parent_id", "")
+        if note_parent:
+            share_id = await self._get_share_id(note_parent)
         await self._put_item(
             nt_id,
-            _note_tag_template(nt_id, note_id, tag_id, tag["title"], now),
+            _note_tag_template(
+                nt_id, note_id, tag_id, tag["title"], now, share_id=share_id
+            ),
         )
         return TagAddedResponse(
             message=(f"Tag '{tag['title']}' added to note '{note['title']}'")
