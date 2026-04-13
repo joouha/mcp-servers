@@ -386,12 +386,18 @@ class JoplinClient:
         resp.raise_for_status()
         return resp
 
-    async def _put_item(self, item_id: str, content: str) -> None:
+    async def _put_item(
+        self, item_id: str, content: str, share_id: str = ""
+    ) -> None:
+        params: dict[str, str] = {}
+        if share_id:
+            params["share_id"] = share_id
         await self._api(
             "PUT",
             f"/api/items/root:/{item_id}.md:/content",
             content=content.encode("utf-8"),
             headers={"Content-Type": "application/octet-stream"},
+            params=params or None,
         )
 
     async def _get_share_id(self, notebook_id: str) -> str:
@@ -486,7 +492,9 @@ class JoplinClient:
         now = _now_iso()
         share_id = await self._get_share_id(parent_id) if parent_id else ""
         await self._put_item(
-            nb_id, _folder_template(nb_id, title, parent_id, now, share_id=share_id)
+            nb_id,
+            _folder_template(nb_id, title, parent_id, now, share_id=share_id),
+            share_id=share_id,
         )
         return NotebookCreatedResponse(
             id=nb_id, message=f"Notebook '{title}' created successfully"
@@ -531,7 +539,8 @@ class JoplinClient:
                 meta["is_shared"] = "1"
 
         content = f"{new_title}\n\n" + "\n".join(f"{k}: {v}" for k, v in meta.items())
-        await self._put_item(notebook_id, content)
+        share_id = meta.get("share_id", "").strip()
+        await self._put_item(notebook_id, content, share_id=share_id)
         return NotebookUpdatedResponse(
             message=f"Notebook {notebook_id} updated successfully"
         )
@@ -666,9 +675,11 @@ class JoplinClient:
                 notebook_id = notebooks[0].id
         note_id = uuid.uuid4().hex
         now = _now_iso()
+        share_id = await self._get_share_id(notebook_id) if notebook_id else ""
         await self._put_item(
             note_id,
             _note_template(note_id, title, body, notebook_id, now),
+            share_id=share_id,
         )
         return NoteCreatedResponse(
             id=note_id, message=f"Note '{title}' created successfully"
@@ -704,10 +715,15 @@ class JoplinClient:
         if notebook_id is not None:
             meta["parent_id"] = notebook_id
 
+        effective_parent = (
+            notebook_id if notebook_id is not None else meta.get("parent_id", "")
+        )
+        share_id = await self._get_share_id(effective_parent) if effective_parent else ""
+
         content = f"{new_title}\n\n{new_body}\n\n" + "\n".join(
             f"{k}: {v}" for k, v in meta.items()
         )
-        await self._put_item(note_id, content)
+        await self._put_item(note_id, content, share_id=share_id)
         return NoteUpdatedResponse(message=f"Note {note_id} updated successfully")
 
     async def edit_note(
@@ -747,10 +763,13 @@ class JoplinClient:
         meta["updated_time"] = now
         meta["user_updated_time"] = now
 
+        parent_id = meta.get("parent_id", "")
+        share_id = await self._get_share_id(parent_id) if parent_id else ""
+
         content = f"{parsed['title']}\n\n{new_body}\n\n" + "\n".join(
             f"{k}: {v}" for k, v in meta.items()
         )
-        await self._put_item(note_id, content)
+        await self._put_item(note_id, content, share_id=share_id)
         return NoteUpdatedResponse(message=f"Note {note_id} edited successfully")
 
     async def delete_note(self, note_id: str) -> NoteDeletedResponse | JoplinError:
@@ -888,9 +907,12 @@ class JoplinClient:
 
         nt_id = uuid.uuid4().hex
         now = _now_iso()
+        note_parent = note.get("parent_id", "")
+        share_id = await self._get_share_id(note_parent) if note_parent else ""
         await self._put_item(
             nt_id,
             _note_tag_template(nt_id, note_id, tag_id, tag["title"], now),
+            share_id=share_id,
         )
         return TagAddedResponse(
             message=(f"Tag '{tag['title']}' added to note '{note['title']}'")
