@@ -326,10 +326,17 @@ type_: 6"""
 class JoplinClient:
     """Authenticated client for the Joplin Server REST API."""
 
-    def __init__(self, url: str, email: str, password: str) -> None:
+    def __init__(
+        self,
+        url: str,
+        email: str,
+        password: str,
+        root_notebook_id: str = "",
+    ) -> None:
         self.url = url.rstrip("/")
         self.email = email
         self.password = password
+        self.root_notebook_id = root_notebook_id
         self._http: httpx.AsyncClient | None = None
         self._session_id: str | None = None
 
@@ -450,11 +457,44 @@ class JoplinClient:
                 log.debug("Failed to fetch %s", name)
         return results
 
+    async def _get_allowed_notebook_ids(self) -> set[str] | None:
+        """Return the set of allowed notebook IDs (root + descendants).
+
+        Returns ``None`` when no restriction is configured.
+        """
+        if not self.root_notebook_id:
+            return None
+        items = await self._fetch_parsed_items()
+        folders = {
+            it["id"]: it["parent_id"]
+            for it in items
+            if it["type"] == TYPE_FOLDER
+        }
+        allowed: set[str] = {self.root_notebook_id}
+        changed = True
+        while changed:
+            changed = False
+            for fid, pid in folders.items():
+                if pid in allowed and fid not in allowed:
+                    allowed.add(fid)
+                    changed = True
+        return allowed
+
+    async def _assert_notebook_allowed(self, notebook_id: str) -> JoplinError | None:
+        """Return a ``JoplinError`` if *notebook_id* is outside the allowed tree."""
+        allowed = await self._get_allowed_notebook_ids()
+        if allowed is not None and notebook_id not in allowed:
+            return JoplinError(
+                error=f"Notebook {notebook_id} is outside the configured root notebook"
+            )
+        return None
+
     # -- Notebooks ----------------------------------------------------------
 
     async def list_notebooks(self) -> list[NotebookSummary]:
-        """List all notebooks."""
+        """List all notebooks (filtered to allowed tree if configured)."""
         items = await self._fetch_parsed_items()
+        allowed = await self._get_allowed_notebook_ids()
         return [
             NotebookSummary(
                 id=it["id"],
@@ -463,12 +503,16 @@ class JoplinClient:
             )
             for it in items
             if it["type"] == TYPE_FOLDER
+            and (allowed is None or it["id"] in allowed)
         ]
 
     async def get_notebook(self, notebook_id: str) -> NotebookSummary | JoplinError:
         """Get a single notebook by ID."""
         if not _ID_RE.match(notebook_id):
             return JoplinError(error=f"Invalid notebook ID: '{notebook_id}'")
+        err = await self._assert_notebook_allowed(notebook_id)
+        if err:
+            return err
         try:
             resp = await self._api("GET", f"/api/items/root:/{notebook_id}.md:/content")
         except httpx.HTTPStatusError as exc:
@@ -486,8 +530,14 @@ class JoplinClient:
 
     async def create_notebook(
         self, title: str, parent_id: str = ""
-    ) -> NotebookCreatedResponse:
+    ) -> NotebookCreatedResponse | JoplinError:
         """Create a new notebook."""
+        if self.root_notebook_id:
+            if not parent_id:
+                parent_id = self.root_notebook_id
+            err = await self._assert_notebook_allowed(parent_id)
+            if err:
+                return err
         nb_id = uuid.uuid4().hex
         now = _now_iso()
         share_id = await self._get_share_id(parent_id) if parent_id else ""
@@ -511,6 +561,13 @@ class JoplinClient:
             return JoplinError(error=f"Invalid notebook ID: '{notebook_id}'")
         if title is None and parent_id is None:
             return JoplinError(error="Provide at least title or parent_id to update")
+        err = await self._assert_notebook_allowed(notebook_id)
+        if err:
+            return err
+        if parent_id is not None and parent_id:
+            err = await self._assert_notebook_allowed(parent_id)
+            if err:
+                return err
         try:
             resp = await self._api("GET", f"/api/items/root:/{notebook_id}.md:/content")
         except httpx.HTTPStatusError as exc:
@@ -551,6 +608,11 @@ class JoplinClient:
         """Delete a notebook, optionally with all contents."""
         if not _ID_RE.match(notebook_id):
             return JoplinError(error=f"Invalid notebook ID: '{notebook_id}'")
+        if notebook_id == self.root_notebook_id:
+            return JoplinError(error="Cannot delete the configured root notebook")
+        err = await self._assert_notebook_allowed(notebook_id)
+        if err:
+            return err
 
         items = await self._fetch_parsed_items()
         nb = None
@@ -594,7 +656,12 @@ class JoplinClient:
     ) -> list[NoteSummary]:
         """List notes, optionally filtered by notebook."""
         items = await self._fetch_parsed_items()
-        notes = [it for it in items if it["type"] == TYPE_NOTE]
+        allowed = await self._get_allowed_notebook_ids()
+        notes = [
+            it for it in items
+            if it["type"] == TYPE_NOTE
+            and (allowed is None or it["parent_id"] in allowed)
+        ]
         if notebook_id:
             notes = [n for n in notes if n["parent_id"] == notebook_id]
         notes.sort(key=lambda x: x["updated_time"], reverse=True)
@@ -615,10 +682,12 @@ class JoplinClient:
         """Search notes by text in title or body."""
         q = query.lower()
         items = await self._fetch_parsed_items()
+        allowed = await self._get_allowed_notebook_ids()
         notes = [
             it
             for it in items
             if it["type"] == TYPE_NOTE
+            and (allowed is None or it["parent_id"] in allowed)
             and (q in it["title"].lower() or q in it["body"].lower())
         ]
         notes.sort(key=lambda x: x["updated_time"], reverse=True)
@@ -648,6 +717,9 @@ class JoplinClient:
         parsed = _parse_joplin_item(resp.text)
         if parsed["type"] != TYPE_NOTE:
             return JoplinError(error=f"Item {note_id} is not a note")
+        err = await self._assert_notebook_allowed(parsed["parent_id"])
+        if err:
+            return err
         return NoteDetail(
             id=parsed["id"],
             title=parsed["title"],
@@ -663,16 +735,24 @@ class JoplinClient:
         title: str,
         body: str = "",
         notebook_id: str = "",
-    ) -> NoteCreatedResponse:
+    ) -> NoteCreatedResponse | JoplinError:
         """Create a new note.
 
-        If *notebook_id* is not provided and exactly one notebook exists, the
-        note is placed in that notebook automatically.
+        If *notebook_id* is not provided and a root notebook is configured, the
+        note is placed in the root notebook.  Otherwise, if exactly one notebook
+        exists, the note is placed there automatically.
         """
         if not notebook_id:
-            notebooks = await self.list_notebooks()
-            if len(notebooks) == 1:
-                notebook_id = notebooks[0].id
+            if self.root_notebook_id:
+                notebook_id = self.root_notebook_id
+            else:
+                notebooks = await self.list_notebooks()
+                if len(notebooks) == 1:
+                    notebook_id = notebooks[0].id
+        if notebook_id:
+            err = await self._assert_notebook_allowed(notebook_id)
+            if err:
+                return err
         note_id = uuid.uuid4().hex
         now = _now_iso()
         share_id = await self._get_share_id(notebook_id) if notebook_id else ""
@@ -704,6 +784,13 @@ class JoplinClient:
         parsed = _parse_joplin_item(resp.text)
         if parsed["type"] != TYPE_NOTE:
             return JoplinError(error=f"Item {note_id} is not a note")
+        err = await self._assert_notebook_allowed(parsed["parent_id"])
+        if err:
+            return err
+        if notebook_id is not None:
+            err = await self._assert_notebook_allowed(notebook_id)
+            if err:
+                return err
 
         new_title = title if title is not None else parsed["title"]
         new_body = body if body is not None else parsed["body"]
@@ -748,6 +835,9 @@ class JoplinClient:
         parsed = _parse_joplin_item(resp.text)
         if parsed["type"] != TYPE_NOTE:
             return JoplinError(error=f"Item {note_id} is not a note")
+        err = await self._assert_notebook_allowed(parsed["parent_id"])
+        if err:
+            return err
 
         old_body = parsed["body"]
         if old_string not in old_body:
@@ -785,6 +875,9 @@ class JoplinClient:
         parsed = _parse_joplin_item(resp.text)
         if parsed["type"] != TYPE_NOTE:
             return JoplinError(error=f"Item {note_id} is not a note")
+        err = await self._assert_notebook_allowed(parsed["parent_id"])
+        if err:
+            return err
 
         await self._api("DELETE", f"/api/items/root:/{note_id}.md:")
         return NoteDeletedResponse(
@@ -857,6 +950,9 @@ class JoplinClient:
                 break
         if note is None:
             return JoplinError(error=f"Note {note_id} not found")
+        err = await self._assert_notebook_allowed(note.get("parent_id", ""))
+        if err:
+            return err
 
         tag_ids = {
             it["metadata"]["tag_id"]
@@ -892,6 +988,9 @@ class JoplinClient:
             return JoplinError(error=f"Tag {tag_id} not found")
         if note is None:
             return JoplinError(error=f"Note {note_id} not found")
+        err = await self._assert_notebook_allowed(note.get("parent_id", ""))
+        if err:
+            return err
 
         # Check if already linked
         already = any(
@@ -927,6 +1026,18 @@ class JoplinClient:
                 return JoplinError(error=f"Invalid {label}: '{val}'")
 
         items = await self._fetch_parsed_items()
+
+        # Verify the note is in an allowed notebook
+        note = next(
+            (it for it in items if it["id"] == note_id and it["type"] == TYPE_NOTE),
+            None,
+        )
+        if note is None:
+            return JoplinError(error=f"Note {note_id} not found")
+        err = await self._assert_notebook_allowed(note.get("parent_id", ""))
+        if err:
+            return err
+
         note_tags = [
             it
             for it in items
@@ -959,6 +1070,7 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict[str, Any]]:
     url = os.environ.get("JOPLIN_SERVER_URL", "")
     email = os.environ.get("JOPLIN_EMAIL", "")
     password = os.environ.get("JOPLIN_PASSWORD", "")
+    root_notebook_id = os.environ.get("JOPLIN_NOTEBOOK_ID", "")
 
     if not url:
         msg = "JOPLIN_SERVER_URL environment variable is required"
@@ -967,7 +1079,12 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict[str, Any]]:
         msg = "JOPLIN_EMAIL and JOPLIN_PASSWORD environment variables are required"
         raise RuntimeError(msg)
 
-    client = JoplinClient(url=url, email=email, password=password)
+    client = JoplinClient(
+        url=url,
+        email=email,
+        password=password,
+        root_notebook_id=root_notebook_id,
+    )
     try:
         yield {"client": client}
     finally:
@@ -1016,7 +1133,7 @@ async def create_notebook(
     ctx: Context,
     title: str,
     parent_id: str = "",
-) -> NotebookCreatedResponse:
+) -> NotebookCreatedResponse | JoplinError:
     """Create a new notebook (folder).
 
     Args:
@@ -1115,7 +1232,7 @@ async def create_note(
     title: str,
     body: str = "",
     notebook_id: str = "",
-) -> NoteCreatedResponse:
+) -> NoteCreatedResponse | JoplinError:
     """Create a new note.
 
     Args:

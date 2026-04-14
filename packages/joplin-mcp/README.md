@@ -36,6 +36,7 @@ The `edit_note` tool provides a search-and-replace style interface for making ta
 | `JOPLIN_SERVER_URL` | URL of the Joplin Server (e.g. `https://joplin.example.com`) | Yes |
 | `JOPLIN_EMAIL` | Email address for authentication | Yes |
 | `JOPLIN_PASSWORD` | Password for authentication | Yes |
+| `JOPLIN_NOTEBOOK_ID` | Restrict operations to this notebook and its children | No |
 
 ## Usage
 
@@ -43,6 +44,8 @@ The `edit_note` tool provides a search-and-replace style interface for making ta
 export JOPLIN_SERVER_URL=https://joplin.example.com
 export JOPLIN_EMAIL=user@example.com
 export JOPLIN_PASSWORD=secret
+# Optional: restrict to a single notebook tree
+# export JOPLIN_NOTEBOOK_ID=abcdef01234567890abcdef012345678
 joplin-mcp
 ```
 
