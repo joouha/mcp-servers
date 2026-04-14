@@ -152,7 +152,7 @@ class ChoreReq(BaseModel):
     id: int | None = None
     due_date: str = ""
     assignees: list[ChoreAssignees] = Field(default_factory=list)
-    assigned_to: int = 0
+    assigned_to: int | None = None
     is_rolling: bool = False
     is_active: bool = True
     frequency: int = 0
