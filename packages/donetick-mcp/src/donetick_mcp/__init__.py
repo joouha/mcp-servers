@@ -71,6 +71,9 @@ class FrequencyMetadata(BaseModel):
     unit: str | None = None
     time: datetime | None = None
     timezone: str = ""
+    week_pattern: str | None = None
+    occurrences: list[int] | None = None
+    week_numbers: list[int] | None = None
 
 
 class NotificationMetadata(BaseModel):
@@ -88,6 +91,7 @@ class Label(BaseModel):
     model_config = _camel_config
 
     id: int
+    label_id: int | None = None
     name: str
     color: str
     created_by: int | None = None
@@ -157,6 +161,7 @@ class ChoreReq(BaseModel):
     is_active: bool = True
     frequency: int = 0
     frequency_metadata: FrequencyMetadata | None = None
+    notification: bool = True
     notification_metadata: NotificationMetadata | None = None
     labels_v2: list[Label] | None = None
     points: int | None = None
@@ -164,6 +169,10 @@ class ChoreReq(BaseModel):
     description: str | None = None
     priority: int = 0
     sub_tasks: list[SubTask] | None = None
+    updated_at: datetime | None = None
+    require_approval: bool = False
+    is_private: bool = False
+    project_id: int | None = None
 
 
 class AuthResp(BaseModel):
@@ -391,7 +400,7 @@ class DonetickClient:
         return data.get("res")
 
     def update_chore(self, req: ChoreReq) -> None:
-        req_json = req.model_dump(mode="json", by_alias=True, exclude_none=True)
+        req_json = req.model_dump(mode="json", by_alias=True)
         self._put("./api/v1/chores/", json=req_json)
 
     def complete_chore(self, chore_id: int, note: str | None = None) -> DonetickChore:
@@ -640,6 +649,21 @@ def update_chore(
         existing.next_due_date.isoformat() if existing.next_due_date else ""
     )
     req = ChoreReq.model_validate(existing_data)
+
+    # Ensure fields that the server dereferences are never None
+    if req.labels_v2 is None:
+        req.labels_v2 = []
+    if req.description is None:
+        req.description = ""
+    if req.sub_tasks is None:
+        req.sub_tasks = []
+    # Set updated_at for optimistic concurrency control
+    req.updated_at = existing.updated_at
+    # Map label ids to label_id for the server's expected format
+    if req.labels_v2:
+        for label in req.labels_v2:
+            if label.label_id is None:
+                label.label_id = label.id
 
     # If the chore has no assignees, ensure strategy is no_assignee to avoid
     # server-side "Error checking next assignee" failures.
