@@ -687,6 +687,36 @@ def delete_meal_plan(ctx: Context, meal_plan_id: int) -> TandoorDeleteResponse:
 
 
 # ---------------------------------------------------------------------------
+# Resources
+# ---------------------------------------------------------------------------
+
+
+@mcp.resource("tandoor://meal-types")
+def meal_types_resource(ctx: Context) -> list[TandoorMealType]:
+    """All meal types configured in Tandoor (e.g. breakfast, lunch, dinner).
+
+    Use this reference data to look up valid meal type IDs when creating or
+    updating meal plan entries.
+    """
+    client = _get_client(ctx)
+    return client.list_meal_types()
+
+
+@mcp.resource("tandoor://recipe/{recipe_id}")
+def recipe_resource(ctx: Context, recipe_id: int) -> TandoorRecipeOverview | TandoorError:
+    """Full overview of a single recipe by ID.
+
+    Attach this as context when planning meals around a specific recipe.
+    """
+    client = _get_client(ctx)
+    resp = client.client.get(f"/api/recipe/{recipe_id}/")
+    if resp.status_code == 404:
+        return TandoorError(error=f"Recipe {recipe_id} not found")
+    resp.raise_for_status()
+    return TandoorRecipeOverview.model_validate(resp.json())
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 

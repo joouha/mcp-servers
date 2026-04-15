@@ -202,6 +202,15 @@ class ChoreSummary(BaseModel):
     priority: int = 0
 
 
+class UserSummary(BaseModel):
+    """Compact user info for the users resource."""
+
+    id: int
+    display_name: str = ""
+    username: str = ""
+    email: str = ""
+
+
 class ChoreDetail(BaseModel):
     """Full chore detail returned by get_chore."""
 
@@ -427,6 +436,16 @@ def _chore_detail(chore: DonetickChore) -> ChoreDetail:
         else [],
         created_at=chore.created_at.isoformat() if chore.created_at else None,
         updated_at=chore.updated_at.isoformat() if chore.updated_at else None,
+    )
+
+
+def _user_summary(user: dict[str, Any]) -> UserSummary:
+    """Convert a raw user dict into a UserSummary."""
+    return UserSummary(
+        id=user.get("id", 0),
+        display_name=user.get("displayName", ""),
+        username=user.get("username", ""),
+        email=user.get("email", ""),
     )
 
 
@@ -669,6 +688,24 @@ def delete_chore(ctx: Context, chore_id: int) -> ChoreDeletedResponse:
     client = _get_client(ctx)
     client.archive_chore(chore_id)
     return ChoreDeletedResponse(message=f"Chore {chore_id} archived successfully")
+
+
+@mcp.resource("donetick://users")
+def users_resource(ctx: Context) -> list[UserSummary]:
+    """List of all users in the Donetick circle. Use this to look up valid user IDs for chore assignment."""
+    client = _get_client(ctx)
+    raw_users = client.get_users()
+    return [_user_summary(u) for u in raw_users]
+
+
+@mcp.resource("donetick://chore/{chore_id}")
+def chore_resource(ctx: Context, chore_id: int) -> ChoreDetail | DonetickError:
+    """Full detail of a single chore by ID. Use this to attach chore context without a tool call."""
+    client = _get_client(ctx)
+    chore = client.get_chore(chore_id)
+    if chore is None:
+        return DonetickError(error=f"Chore {chore_id} not found")
+    return _chore_detail(chore)
 
 
 # ---------------------------------------------------------------------------
