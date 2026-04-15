@@ -147,7 +147,7 @@ class ChoreReq(BaseModel):
     model_config = _camel_config
 
     name: str
-    assign_strategy: AssignmentStrategy = AssignmentStrategy.ROUND_ROBIN
+    assign_strategy: AssignmentStrategy = AssignmentStrategy.NO_ASSIGNEE
     frequency_type: FrequencyType = FrequencyType.ONCE
     id: int | None = None
     due_date: str = ""
@@ -197,7 +197,7 @@ class ChoreSummary(BaseModel):
     name: str
     due: str | None = None
     active: bool = True
-    assigned_to: int = 0
+    assigned_to: int | None = None
     frequency_type: str = ""
     priority: int = 0
 
@@ -219,7 +219,7 @@ class ChoreDetail(BaseModel):
     description: str | None = None
     due: str | None = None
     active: bool = True
-    assigned_to: int = 0
+    assigned_to: int | None = None
     assignees: list[int] = Field(default_factory=list)
     assign_strategy: str = ""
     frequency: int = 0
@@ -414,7 +414,7 @@ def _chore_summary(chore: DonetickChore) -> ChoreSummary:
         name=chore.name,
         due=chore.next_due_date.isoformat() if chore.next_due_date else None,
         active=chore.is_active,
-        assigned_to=chore.assigned_to or 0,
+        assigned_to=chore.assigned_to,
         frequency_type=chore.frequency_type.value,
         priority=chore.priority,
     )
@@ -428,7 +428,7 @@ def _chore_detail(chore: DonetickChore) -> ChoreDetail:
         description=chore.description,
         due=chore.next_due_date.isoformat() if chore.next_due_date else None,
         active=chore.is_active,
-        assigned_to=chore.assigned_to or 0,
+        assigned_to=chore.assigned_to,
         assignees=[a.user_id for a in chore.assignees],
         assign_strategy=chore.assign_strategy.value,
         frequency=chore.frequency,
@@ -550,9 +550,9 @@ def create_chore(
     name: str,
     description: str | None = None,
     due_date: str | None = None,
-    assigned_to: int = 0,
+    assigned_to: int | None = None,
     assignees: list[int] | None = None,
-    assign_strategy: str = "round_robin",
+    assign_strategy: str = "no_assignee",
     frequency_type: str = "once",
     frequency: int = 0,
     is_rolling: bool = False,
@@ -567,7 +567,7 @@ def create_chore(
         due_date: Due date as ISO 8601 string (e.g. "2025-01-15T10:00:00Z").
         assigned_to: User ID to assign the chore to.
         assignees: List of user IDs who can be assigned.
-        assign_strategy: Assignment strategy (random, least_assigned, least_completed, keep_last_assigned, random_except_last_assigned, round_robin).
+        assign_strategy: Assignment strategy (no_assignee, random, least_assigned, least_completed, keep_last_assigned, random_except_last_assigned, round_robin).
         frequency_type: Recurrence type (once, daily, weekly, monthly, yearly, interval, days_of_the_week, day_of_the_month, no_repeat).
         frequency: Frequency interval value.
         is_rolling: Whether the due date rolls from completion date.
@@ -640,6 +640,11 @@ def update_chore(
         existing.next_due_date.isoformat() if existing.next_due_date else ""
     )
     req = ChoreReq.model_validate(existing_data)
+
+    # If the chore has no assignees, ensure strategy is no_assignee to avoid
+    # server-side "Error checking next assignee" failures.
+    if not req.assignees and req.assign_strategy != AssignmentStrategy.NO_ASSIGNEE:
+        req.assign_strategy = AssignmentStrategy.NO_ASSIGNEE
 
     if name is not None:
         req.name = name
