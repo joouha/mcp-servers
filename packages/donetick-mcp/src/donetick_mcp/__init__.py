@@ -161,7 +161,7 @@ class ChoreReq(BaseModel):
     is_active: bool = True
     frequency: int = 0
     frequency_metadata: FrequencyMetadata | None = None
-    notification: bool = True
+    notification: bool = False
     notification_metadata: NotificationMetadata | None = None
     labels_v2: list[Label] | None = None
     points: int | None = None
@@ -169,7 +169,6 @@ class ChoreReq(BaseModel):
     description: str | None = None
     priority: int = 0
     sub_tasks: list[SubTask] | None = None
-    updated_at: datetime | None = None
     require_approval: bool = False
     is_private: bool = False
     project_id: int | None = None
@@ -283,6 +282,10 @@ class ChoreDeletedResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class _DonetickTransportError(RuntimeError):
+    """Raised when Donetick closes a connection mid-response."""
+
+
 class DonetickClient:
     """Authenticated client for the Donetick REST API."""
 
@@ -356,23 +359,44 @@ class DonetickClient:
         msg = f"{resp.status_code} {resp.reason_phrase} for {resp.url}: {detail}"
         raise RuntimeError(msg)
 
-    def _get(self, path: str) -> Any:
+    def _request_json(
+        self,
+        method: str,
+        path: str,
+        *,
+        json: Any = None,
+        allow_remote_disconnect: bool = False,
+    ) -> Any:
         self._ensure_auth()
-        resp = self._client.get(self.url.join(path))
+        try:
+            resp = self._client.request(method, self.url.join(path), json=json)
+        except httpx.RemoteProtocolError as exc:
+            if allow_remote_disconnect:
+                msg = f"Donetick disconnected while handling {method} {path}"
+                raise _DonetickTransportError(msg) from exc
+            raise
         self._raise_for_status(resp)
         return resp.json()
 
-    def _post(self, path: str, json: Any = None) -> Any:
-        self._ensure_auth()
-        resp = self._client.post(self.url.join(path), json=json)
-        self._raise_for_status(resp)
-        return resp.json()
+    def _get(self, path: str) -> Any:
+        return self._request_json("GET", path)
+
+    def _post(
+        self,
+        path: str,
+        json: Any = None,
+        *,
+        allow_remote_disconnect: bool = False,
+    ) -> Any:
+        return self._request_json(
+            "POST",
+            path,
+            json=json,
+            allow_remote_disconnect=allow_remote_disconnect,
+        )
 
     def _put(self, path: str, json: Any = None) -> Any:
-        self._ensure_auth()
-        resp = self._client.put(self.url.join(path), json=json)
-        self._raise_for_status(resp)
-        return resp.json()
+        return self._request_json("PUT", path, json=json)
 
     # -- public API ---------------------------------------------------------
 
@@ -389,15 +413,59 @@ class DonetickClient:
         return [DonetickChore.model_validate(c) for c in data.get("res", [])]
 
     def get_chore(self, chore_id: int) -> DonetickChore | None:
-        data = self._get(f"./api/v1/chores/{chore_id}")
+        try:
+            data = self._get(f"./api/v1/chores/{chore_id}")
+        except RuntimeError as exc:
+            # Donetick returns 500 with "Failed to retrieve chore" for non-existent chores
+            if "Failed to retrieve chore" in str(exc):
+                return None
+            raise
         if "error" in data:
             return None
         return DonetickChore.model_validate(data.get("res", {}))
 
     def create_chore(self, req: ChoreReq) -> int:
         req_json = req.model_dump(mode="json", by_alias=True, exclude_none=True)
-        data = self._post("./api/v1/chores/", json=req_json)
-        return data.get("res")
+        try:
+            data = self._post(
+                "./api/v1/chores/",
+                json=req_json,
+                allow_remote_disconnect=bool(req.due_date),
+            )
+        except _DonetickTransportError:
+            chores = self.list_chores()
+            matching = [chore for chore in chores if chore.name == req.name]
+
+            if req.due_date:
+                matching = [
+                    chore
+                    for chore in matching
+                    if chore.next_due_date
+                    and chore.next_due_date.isoformat() == req.due_date
+                ]
+            if req.assigned_to is not None:
+                matching = [
+                    chore for chore in matching if chore.assigned_to == req.assigned_to
+                ]
+
+            if matching:
+                newest = max(
+                    matching,
+                    key=lambda chore: chore.id if chore.id is not None else -1,
+                )
+                if newest.id is not None:
+                    log.warning(
+                        "Recovered chore creation after Donetick disconnected: %s",
+                        newest.id,
+                    )
+                    return newest.id
+            raise
+
+        chore_id = data.get("res")
+        if not isinstance(chore_id, int):
+            msg = "Donetick create_chore response did not include a valid chore id"
+            raise RuntimeError(msg)
+        return chore_id
 
     def update_chore(self, req: ChoreReq) -> None:
         req_json = req.model_dump(mode="json", by_alias=True)
@@ -657,8 +725,6 @@ def update_chore(
         req.description = ""
     if req.sub_tasks is None:
         req.sub_tasks = []
-    # Set updated_at for optimistic concurrency control
-    req.updated_at = existing.updated_at
     # Map label ids to label_id for the server's expected format
     if req.labels_v2:
         for label in req.labels_v2:
