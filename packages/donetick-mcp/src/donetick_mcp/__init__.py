@@ -334,22 +334,35 @@ class DonetickClient:
 
     # -- helpers ------------------------------------------------------------
 
+    @staticmethod
+    def _raise_for_status(resp: httpx.Response) -> None:
+        """Raise with the server's error message when available."""
+        if resp.is_success:
+            return
+        try:
+            body = resp.json()
+            detail = body.get("error", resp.text)
+        except Exception:
+            detail = resp.text
+        msg = f"{resp.status_code} {resp.reason_phrase} for {resp.url}: {detail}"
+        raise RuntimeError(msg)
+
     def _get(self, path: str) -> Any:
         self._ensure_auth()
         resp = self._client.get(self.url.join(path))
-        resp.raise_for_status()
+        self._raise_for_status(resp)
         return resp.json()
 
     def _post(self, path: str, json: Any = None) -> Any:
         self._ensure_auth()
         resp = self._client.post(self.url.join(path), json=json)
-        resp.raise_for_status()
+        self._raise_for_status(resp)
         return resp.json()
 
     def _put(self, path: str, json: Any = None) -> Any:
         self._ensure_auth()
         resp = self._client.put(self.url.join(path), json=json)
-        resp.raise_for_status()
+        self._raise_for_status(resp)
         return resp.json()
 
     # -- public API ---------------------------------------------------------
