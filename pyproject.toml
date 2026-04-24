@@ -9,6 +9,14 @@ dependencies = [
     "caldav-mcp",
     "tandoor-mcp",
     "joplin-mcp",
+    "browser-mcp",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "pytest-timeout>=2.3.0",
 ]
 
 [tool.uv.workspace]
@@ -21,3 +29,4 @@ donetick-mcp = { workspace = true }
 caldav-mcp = { workspace = true }
 tandoor-mcp = { workspace = true }
 joplin-mcp = { workspace = true }
+browser-mcp = { workspace = true }

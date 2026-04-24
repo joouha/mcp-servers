@@ -1,0 +1,13 @@
+[project]
+name = "browser-mcp"
+version = "0.1.0"
+description = "An MCP server for browser automation via Camoufox."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "camoufox[geoip]>=0.4",
+    "fastmcp>=2.0",
+]
+
+[project.scripts]
+browser-mcp = "browser_mcp:main"

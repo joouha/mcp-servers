@@ -6,6 +6,7 @@ A collection of [Model Context Protocol (MCP)](https://modelcontextprotocol.io/)
 
 | Package | Description | Service |
 |---------|-------------|---------|
+| [browser-mcp](packages/browser-mcp/) | Browser automation (open, click, type, scroll) | [Camoufox](https://camoufox.com/) |
 | [caldav-mcp](packages/caldav-mcp/) | Manage calendar events via CalDAV | [Nextcloud](https://nextcloud.com/), [Radicale](https://radicale.org/), [Baikal](https://sabre.io/baikal/), etc. |
 | [donetick-mcp](packages/donetick-mcp/) | Manage household chores | [Donetick](https://donetick.com/) |
 | [joplin-mcp](packages/joplin-mcp/) | Manage notes, notebooks, and tags | [Joplin Server](https://joplinapp.org/) |
@@ -27,6 +28,7 @@ uv sync
 Each server can then be run directly:
 
 ```bash
+browser-mcp
 caldav-mcp
 donetick-mcp
 joplin-mcp
@@ -40,6 +42,7 @@ See the individual package READMEs for configuration details and Claude Desktop 
 ```
 .
 ├── packages/
+│   ├── browser-mcp/         # Camoufox browser automation server
 │   ├── caldav-mcp/          # CalDAV calendar server
 │   ├── donetick-mcp/        # Donetick chores server
 │   ├── joplin-mcp/          # Joplin notes server
@@ -53,6 +56,7 @@ See the individual package READMEs for configuration details and Claude Desktop 
 Each server exposes a FastMCP app that can be tested interactively with the FastMCP inspector:
 
 ```bash
+fastmcp dev packages/browser-mcp/src/browser_mcp/__init__.py:mcp
 fastmcp dev packages/caldav-mcp/src/caldav_mcp/__init__.py:mcp
 fastmcp dev packages/donetick-mcp/src/donetick_mcp/__init__.py:mcp
 fastmcp dev packages/joplin-mcp/src/joplin_mcp/__init__.py:mcp
