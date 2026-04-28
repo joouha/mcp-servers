@@ -17,7 +17,6 @@ from tandoor_mcp import (
     TandoorMealPlan,
     TandoorRecipeOverview,
     PaginatedResponse,
-    TandoorError,
 )
 
 

@@ -393,9 +393,7 @@ class JoplinClient:
         resp.raise_for_status()
         return resp
 
-    async def _put_item(
-        self, item_id: str, content: str, share_id: str = ""
-    ) -> None:
+    async def _put_item(self, item_id: str, content: str, share_id: str = "") -> None:
         params: dict[str, str] = {}
         if share_id:
             params["share_id"] = share_id
@@ -466,9 +464,7 @@ class JoplinClient:
             return None
         items = await self._fetch_parsed_items()
         folders = {
-            it["id"]: it["parent_id"]
-            for it in items
-            if it["type"] == TYPE_FOLDER
+            it["id"]: it["parent_id"] for it in items if it["type"] == TYPE_FOLDER
         }
         allowed: set[str] = {self.root_notebook_id}
         changed = True
@@ -502,8 +498,7 @@ class JoplinClient:
                 parent_id=it["parent_id"],
             )
             for it in items
-            if it["type"] == TYPE_FOLDER
-            and (allowed is None or it["id"] in allowed)
+            if it["type"] == TYPE_FOLDER and (allowed is None or it["id"] in allowed)
         ]
 
     async def get_notebook(self, notebook_id: str) -> NotebookSummary | JoplinError:
@@ -658,7 +653,8 @@ class JoplinClient:
         items = await self._fetch_parsed_items()
         allowed = await self._get_allowed_notebook_ids()
         notes = [
-            it for it in items
+            it
+            for it in items
             if it["type"] == TYPE_NOTE
             and (allowed is None or it["parent_id"] in allowed)
         ]
@@ -805,7 +801,9 @@ class JoplinClient:
         effective_parent = (
             notebook_id if notebook_id is not None else meta.get("parent_id", "")
         )
-        share_id = await self._get_share_id(effective_parent) if effective_parent else ""
+        share_id = (
+            await self._get_share_id(effective_parent) if effective_parent else ""
+        )
 
         content = f"{new_title}\n\n{new_body}\n\n" + "\n".join(
             f"{k}: {v}" for k, v in meta.items()

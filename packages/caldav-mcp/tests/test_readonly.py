@@ -17,7 +17,6 @@ from caldav_mcp import (
     CalendarInfo,
     EventDetail,
     EventSummary,
-    CalDAVError,
 )
 
 

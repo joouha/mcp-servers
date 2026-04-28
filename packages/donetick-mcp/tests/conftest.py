@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import os
 import platform
-import shutil
 import socket
 import stat
 import subprocess
@@ -96,7 +95,6 @@ def _free_port() -> int:
         return s.getsockname()[1]
 
 
-
 def _wait_for_server(
     base_url: str, proc: subprocess.Popen, timeout: float = 30.0
 ) -> None:
@@ -109,7 +107,7 @@ def _wait_for_server(
             msg = f"Donetick server exited immediately with code {ret}:\n{output}"
             raise RuntimeError(msg)
         try:
-            resp = httpx.get(f"{base_url}/api/v1/auth/", timeout=2)
+            _resp = httpx.get(f"{base_url}/api/v1/auth/", timeout=2)
             # Any response (even 404) means the server is up
             return
         except (httpx.ConnectError, httpx.ReadError, httpx.TimeoutException):

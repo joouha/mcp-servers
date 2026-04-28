@@ -218,7 +218,9 @@ class TandoorClient:
                 results=recipes,
             )
         recipes = [TandoorRecipeOverview.model_validate(r) for r in data]
-        return PaginatedResponse[TandoorRecipeOverview](count=len(recipes), results=recipes)
+        return PaginatedResponse[TandoorRecipeOverview](
+            count=len(recipes), results=recipes
+        )
 
     # -- recipe import from URL ---------------------------------------------
 
@@ -282,8 +284,7 @@ class TandoorClient:
 
         if recipe_data.get("keywords"):
             payload["keywords"] = [
-                kw for kw in recipe_data["keywords"]
-                if kw.get("import_keyword", True)
+                kw for kw in recipe_data["keywords"] if kw.get("import_keyword", True)
             ]
 
         if recipe_data.get("properties"):
@@ -291,7 +292,9 @@ class TandoorClient:
 
         create_resp = self.client.post("/api/recipe/", json=payload)
         if create_resp.status_code == 400:
-            return TandoorError(error="Bad request creating recipe", details=create_resp.json())
+            return TandoorError(
+                error="Bad request creating recipe", details=create_resp.json()
+            )
         create_resp.raise_for_status()
         created = create_resp.json()
 
@@ -344,7 +347,8 @@ class TandoorClient:
         if query:
             q = query.lower()
             plans = [
-                p for p in plans
+                p
+                for p in plans
                 if q in p.title.lower()
                 or q in p.note.lower()
                 or (p.recipe is not None and q in p.recipe.name.lower())
@@ -460,9 +464,13 @@ class TandoorClient:
         """
         resp = self.client.delete(f"/api/meal-plan/{meal_plan_id}/")
         if resp.status_code == 404:
-            return TandoorDeleteResponse(message=f"Meal plan {meal_plan_id} already deleted")
+            return TandoorDeleteResponse(
+                message=f"Meal plan {meal_plan_id} already deleted"
+            )
         resp.raise_for_status()
-        return TandoorDeleteResponse(message=f"Meal plan {meal_plan_id} deleted successfully")
+        return TandoorDeleteResponse(
+            message=f"Meal plan {meal_plan_id} deleted successfully"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -557,7 +565,9 @@ def search_recipes(
 
 
 @mcp.tool()
-def import_recipe_from_url(ctx: Context, url: str) -> TandoorRecipeOverview | TandoorError:
+def import_recipe_from_url(
+    ctx: Context, url: str
+) -> TandoorRecipeOverview | TandoorError:
     """Import a recipe from a URL into Tandoor.
 
     Scrapes the recipe from the given URL using Tandoor's built-in parser,
@@ -703,7 +713,9 @@ def meal_types_resource(ctx: Context) -> list[TandoorMealType]:
 
 
 @mcp.resource("tandoor://recipe/{recipe_id}")
-def recipe_resource(ctx: Context, recipe_id: int) -> TandoorRecipeOverview | TandoorError:
+def recipe_resource(
+    ctx: Context, recipe_id: int
+) -> TandoorRecipeOverview | TandoorError:
     """Full overview of a single recipe by ID.
 
     Attach this as context when planning meals around a specific recipe.

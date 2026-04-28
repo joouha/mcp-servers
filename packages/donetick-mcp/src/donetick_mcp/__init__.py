@@ -517,7 +517,7 @@ def _chore_detail(chore: DonetickChore) -> ChoreDetail:
         priority=chore.priority,
         points=chore.points,
         status=chore.status.value,
-        labels=[l.name for l in chore.labels_v2] if chore.labels_v2 else [],
+        labels=[label.name for label in chore.labels_v2] if chore.labels_v2 else [],
         sub_tasks=[
             {"id": s.id, "name": s.name, "completed": s.completed_at is not None}
             for s in chore.sub_tasks
@@ -547,7 +547,7 @@ def _normalize_due_date(value: str) -> str:
     """
     if not value:
         return value
-    from datetime import UTC, timezone
+    from datetime import UTC
 
     try:
         dt = datetime.fromisoformat(value)

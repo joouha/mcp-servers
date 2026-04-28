@@ -21,7 +21,9 @@ async def test_ensure_started_launches_browser():
     mock_cm.__aenter__ = AsyncMock(return_value=mock_browser)
     mock_cm.__aexit__ = AsyncMock(return_value=False)
 
-    with patch("browser_mcp.BrowserState._create_cm", return_value=mock_cm, create=True):
+    with patch(
+        "browser_mcp.BrowserState._create_cm", return_value=mock_cm, create=True
+    ):
         # Directly test the state machine
         state = BrowserState()
         state._cm = mock_cm
