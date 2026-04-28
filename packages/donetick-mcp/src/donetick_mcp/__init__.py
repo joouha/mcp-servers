@@ -203,7 +203,7 @@ class ChoreSummary(BaseModel):
 
     id: int | None = None
     name: str
-    due: str | None = None
+    due_date: str | None = None
     active: bool = True
     assigned_to: int | None = None
     frequency_type: str = ""
@@ -225,7 +225,7 @@ class ChoreDetail(BaseModel):
     id: int | None = None
     name: str
     description: str | None = None
-    due: str | None = None
+    due_date: str | None = None
     active: bool = True
     assigned_to: int | None = None
     assignees: list[int] = Field(default_factory=list)
@@ -489,7 +489,7 @@ def _chore_summary(chore: DonetickChore) -> ChoreSummary:
     return ChoreSummary(
         id=chore.id,
         name=chore.name,
-        due=chore.next_due_date.isoformat() if chore.next_due_date else None,
+        due_date=chore.next_due_date.isoformat() if chore.next_due_date else None,
         active=chore.is_active,
         assigned_to=chore.assigned_to,
         frequency_type=chore.frequency_type.value,
@@ -503,7 +503,7 @@ def _chore_detail(chore: DonetickChore) -> ChoreDetail:
         id=chore.id,
         name=chore.name,
         description=chore.description,
-        due=chore.next_due_date.isoformat() if chore.next_due_date else None,
+        due_date=chore.next_due_date.isoformat() if chore.next_due_date else None,
         active=chore.is_active,
         assigned_to=chore.assigned_to,
         assignees=[a.user_id for a in chore.assignees],
@@ -537,6 +537,26 @@ def _user_summary(user: dict[str, Any]) -> UserSummary:
         username=user.get("username", ""),
         email=user.get("email", ""),
     )
+
+
+def _normalize_due_date(value: str) -> str:
+    """Normalize a due-date string to RFC 3339 format expected by Donetick.
+
+    Donetick rejects dates without timezone info.  This helper parses the
+    value and re-formats it with a ``Z`` suffix when no timezone is present.
+    """
+    if not value:
+        return value
+    from datetime import UTC, timezone
+
+    try:
+        dt = datetime.fromisoformat(value)
+    except ValueError:
+        # If it can't be parsed, return as-is and let the server reject it
+        return value
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    return dt.strftime("%Y-%m-%dT%H:%M:%S%z")
 
 
 # ---------------------------------------------------------------------------
@@ -655,7 +675,7 @@ def create_chore(
     req = ChoreReq(
         name=name,
         description=description,
-        due_date=due_date or "",
+        due_date=_normalize_due_date(due_date) if due_date else "",
         assigned_to=assigned_to,
         assignees=[ChoreAssignees(user_id=uid) for uid in (assignees or [])],
         assign_strategy=AssignmentStrategy(assign_strategy),
@@ -714,7 +734,9 @@ def update_chore(
     existing_data = existing.model_dump()
     # Map DonetickChore's next_due_date to ChoreReq's due_date
     existing_data["due_date"] = (
-        existing.next_due_date.isoformat() if existing.next_due_date else ""
+        _normalize_due_date(existing.next_due_date.isoformat())
+        if existing.next_due_date
+        else ""
     )
     req = ChoreReq.model_validate(existing_data)
 
@@ -741,7 +763,7 @@ def update_chore(
     if description is not None:
         req.description = description
     if due_date is not None:
-        req.due_date = due_date
+        req.due_date = _normalize_due_date(due_date)
     if assigned_to is not None:
         req.assigned_to = assigned_to
     if assignees is not None:
