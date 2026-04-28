@@ -821,21 +821,21 @@ def delete_chore(ctx: Context, chore_id: int) -> ChoreDeletedResponse:
 
 
 @mcp.resource("donetick://users")
-def users_resource(ctx: Context) -> list[UserSummary]:
+def users_resource(ctx: Context) -> list[dict[str, Any]]:
     """List of all users in the Donetick circle. Use this to look up valid user IDs for chore assignment."""
     client = _get_client(ctx)
     raw_users = client.get_users()
-    return [_user_summary(u) for u in raw_users]
+    return [_user_summary(u).model_dump() for u in raw_users]
 
 
 @mcp.resource("donetick://chore/{chore_id}")
-def chore_resource(ctx: Context, chore_id: int) -> ChoreDetail | DonetickError:
+def chore_resource(ctx: Context, chore_id: int) -> dict[str, Any]:
     """Full detail of a single chore by ID. Use this to attach chore context without a tool call."""
     client = _get_client(ctx)
     chore = client.get_chore(chore_id)
     if chore is None:
-        return DonetickError(error=f"Chore {chore_id} not found")
-    return _chore_detail(chore)
+        return DonetickError(error=f"Chore {chore_id} not found").model_dump()
+    return _chore_detail(chore).model_dump()
 
 
 # ---------------------------------------------------------------------------
