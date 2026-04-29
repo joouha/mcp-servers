@@ -35,7 +35,7 @@ class TestChoreSummaryHelper:
         summary = _chore_summary(chore)
         assert summary.id == chore_id
         assert summary.name == "Summary Helper Test"
-        assert summary.due is not None
+        assert summary.due_date is not None
         assert summary.priority == 2
         assert summary.active is True
 
