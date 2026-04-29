@@ -222,6 +222,63 @@ class TandoorClient:
             count=len(recipes), results=recipes
         )
 
+    # -- recipe creation ----------------------------------------------------
+
+    def create_recipe(
+        self,
+        name: str,
+        description: str | None = None,
+        servings: int = 1,
+        servings_text: str = "",
+        working_time: int = 0,
+        waiting_time: int = 0,
+        source_url: str | None = None,
+        internal: bool = True,
+        keywords: list[dict[str, Any]] | None = None,
+        steps: list[dict[str, Any]] | None = None,
+    ) -> TandoorRecipeOverview | TandoorError:
+        """Create a new recipe in Tandoor.
+
+        Args:
+            name: Name of the recipe.
+            description: Short description (max 512 chars).
+            servings: Number of servings (default 1).
+            servings_text: Text label for servings (e.g. "portions").
+            working_time: Active working time in minutes.
+            waiting_time: Passive waiting time in minutes.
+            source_url: Optional URL where the recipe originated.
+            internal: If True, recipe is stored internally (default True).
+            keywords: Optional list of keyword dicts, each with at least a "name" key.
+            steps: Optional list of step dicts, each with "instruction" (str) and
+                optionally "ingredients" (list of ingredient dicts with "amount",
+                "food"->{"name"}, "unit"->{"name"}, "note") and "time" (int minutes).
+        """
+        payload: dict[str, Any] = {
+            "name": name,
+            "servings": servings,
+            "servings_text": servings_text,
+            "working_time": working_time,
+            "waiting_time": waiting_time,
+            "internal": internal,
+        }
+        if description is not None:
+            payload["description"] = description
+        if source_url is not None:
+            payload["source_url"] = source_url
+        if keywords is not None:
+            payload["keywords"] = keywords
+        if steps is not None:
+            payload["steps"] = steps
+        else:
+            # Tandoor requires at least one step
+            payload["steps"] = [{"instruction": "", "ingredients": []}]
+
+        resp = self.client.post("/api/recipe/", json=payload)
+        if resp.status_code == 400:
+            return TandoorError(error="Bad request", details=resp.json())
+        resp.raise_for_status()
+        return TandoorRecipeOverview.model_validate(resp.json())
+
     # -- recipe import from URL ---------------------------------------------
 
     def import_recipe_from_url(self, url: str) -> TandoorRecipeOverview | TandoorError:
@@ -578,6 +635,55 @@ def import_recipe_from_url(
     """
     client = _get_client(ctx)
     return client.import_recipe_from_url(url)
+
+
+@mcp.tool()
+def create_recipe(
+    ctx: Context,
+    name: str,
+    description: str | None = None,
+    servings: int = 1,
+    servings_text: str = "",
+    working_time: int = 0,
+    waiting_time: int = 0,
+    source_url: str | None = None,
+    internal: bool = True,
+    keywords: list[dict[str, Any]] | None = None,
+    steps: list[dict[str, Any]] | None = None,
+) -> TandoorRecipeOverview | TandoorError:
+    """Create a new recipe in Tandoor.
+
+    Args:
+        name: Name of the recipe.
+        description: Short description of the recipe (max 512 characters).
+        servings: Number of servings (default 1).
+        servings_text: Label for servings unit (e.g. "portions", "pieces").
+        working_time: Active preparation time in minutes (default 0).
+        waiting_time: Passive waiting time in minutes (default 0).
+        source_url: Optional URL where the recipe originated from.
+        internal: If True, recipe is stored internally in Tandoor (default True).
+        keywords: Optional list of keyword objects. Each should have at least a
+            "name" key (e.g. [{"name": "Italian"}, {"name": "Quick"}]).
+            Existing keywords will be matched by name, new ones created.
+        steps: Optional list of step objects. Each should have an "instruction"
+            string and optionally "ingredients" (list of ingredient objects with
+            "amount" (float), "food" ({"name": str}), "unit" ({"name": str}),
+            and "note" (str)) and "time" (int, minutes for this step).
+            If not provided, a single empty step is created.
+    """
+    client = _get_client(ctx)
+    return client.create_recipe(
+        name=name,
+        description=description,
+        servings=servings,
+        servings_text=servings_text,
+        working_time=working_time,
+        waiting_time=waiting_time,
+        source_url=source_url,
+        internal=internal,
+        keywords=keywords,
+        steps=steps,
+    )
 
 
 @mcp.tool()
