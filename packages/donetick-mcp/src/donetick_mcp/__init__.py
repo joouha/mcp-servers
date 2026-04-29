@@ -540,10 +540,13 @@ def _user_summary(user: dict[str, Any]) -> UserSummary:
 
 
 def _normalize_due_date(value: str) -> str:
-    """Normalize a due-date string to RFC 3339 format expected by Donetick.
+    """Normalize a due-date string to the format expected by Donetick.
 
-    Donetick rejects dates without timezone info.  This helper parses the
-    value and re-formats it with a ``Z`` suffix when no timezone is present.
+    The Donetick Go backend parses due dates with the Go layout
+    ``2006-01-02T15:04:05.000Z`` which corresponds to
+    ``%Y-%m-%dT%H:%M:%S.000Z`` in Python – i.e. UTC with milliseconds and a
+    literal ``Z`` suffix.  This helper converts any parseable date/datetime
+    string into that canonical form.
     """
     if not value:
         return value
@@ -556,7 +559,10 @@ def _normalize_due_date(value: str) -> str:
         return value
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=UTC)
-    return dt.strftime("%Y-%m-%dT%H:%M:%S%z")
+    else:
+        # Convert to UTC so we can use the literal 'Z' suffix
+        dt = dt.astimezone(UTC)
+    return dt.strftime("%Y-%m-%dT%H:%M:%S") + ".000Z"
 
 
 # ---------------------------------------------------------------------------
