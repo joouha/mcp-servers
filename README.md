@@ -8,13 +8,13 @@ A collection of [Model Context Protocol (MCP)](https://modelcontextprotocol.io/)
 |---------|-------------|---------|
 | [browser-mcp](packages/browser-mcp/) | Browser automation (open, click, type, scroll) | [Camoufox](https://camoufox.com/) |
 | [caldav-mcp](packages/caldav-mcp/) | Manage calendar events via CalDAV | [Nextcloud](https://nextcloud.com/), [Radicale](https://radicale.org/), [Baikal](https://sabre.io/baikal/), etc. |
-| [donetick-mcp](packages/donetick-mcp/) | Manage household chores | [Donetick](https://donetick.com/) |
+| [donetick-mcp](packages/donetick-mcp/) | Manage household chores, labels, and subtasks | [Donetick](https://donetick.com/) |
 | [joplin-mcp](packages/joplin-mcp/) | Manage notes, notebooks, and tags | [Joplin Server](https://joplinapp.org/) |
 | [tandoor-mcp](packages/tandoor-mcp/) | Manage meal plans and recipes | [Tandoor Recipes](https://tandoor.dev/) |
 
 ## Prerequisites
 
-- Python 3.14+
+- Python 3.12+
 - [uv](https://docs.astral.sh/uv/)
 
 ## Getting Started
