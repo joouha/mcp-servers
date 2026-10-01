@@ -259,22 +259,26 @@ class TestUpdateChore:
         assert updated.next_due_date is not None
         assert abs((updated.next_due_date - target).total_seconds()) < 1
 
-    async def test_update_due_date_via_the_dedicated_endpoint(
+    async def test_update_due_date_helper_carries_the_rest_of_the_record(
         self, client: DonetickClient
     ) -> None:
+        """The helper is a read-modify-write over the main PUT endpoint."""
         chore_id = await client.create_chore(
             ChoreReq(
                 name="Quick Due Date Chore",
                 next_due_date=datetime.now(UTC) + timedelta(days=1),
+                priority=3,
             )
         )
         target = datetime.now(UTC) + timedelta(days=20)
-        await client.update_due_date(chore_id, target.isoformat())
+        await client.update_due_date(chore_id, target)
 
         updated = await client.get_chore(chore_id)
         assert updated is not None
         assert updated.next_due_date is not None
         assert abs((updated.next_due_date - target).total_seconds()) < 1
+        # Nothing else may be disturbed by the round trip.
+        assert updated.priority == 3
 
     async def test_add_and_remove_a_subtask(self, client: DonetickClient) -> None:
         from donetick_mcp import build_subtasks

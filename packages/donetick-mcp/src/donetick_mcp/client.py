@@ -22,6 +22,7 @@ import contextlib
 import logging
 import random
 import time
+from datetime import datetime
 from types import TracebackType
 from typing import Any
 
@@ -573,32 +574,39 @@ class DonetickClient:
         #
         # `syncVersion` is not part of `ChoreReq` at all and is dropped for
         # good measure, since it is server-managed.
-        payload = req.model_dump(mode="json", by_alias=True, exclude_none=True)
+        # `exclude_none` must stay off here.  This endpoint is a full
+        # replacement, so a key left out of the body is reset server-side:
+        # dropping the nulls silently blanked every unset field on every
+        # edit -- most visibly `nextDueDate`, which is how chore due dates
+        # went missing.  Dumping the nulls keeps an explicitly-unset field
+        # (an unassigned chore, a chore with no points) unchanged.
+        payload = req.model_dump(mode="json", by_alias=True)
         payload.pop("syncVersion", None)
         # Donetick's edit handler dereferences *choreReq.LabelsV2 and
         # *choreReq.SubTasks with no nil guard, unlike its create handler.
-        # Omitting either key panics the server, which drops the connection
-        # without any HTTP response, so both are always sent -- empty when
-        # there is nothing to carry.
-        payload.setdefault("labelsV2", [])
-        payload.setdefault("subTasks", [])
+        # Omitting either key -- or sending an explicit null -- panics the
+        # server, which drops the connection without any HTTP response, so
+        # both are always sent, empty when there is nothing to carry.
+        payload["labelsV2"] = payload.get("labelsV2") or []
+        payload["subTasks"] = payload.get("subTasks") or []
         body = await self._put("/api/v1/chores/", json=payload)
         return list(body.get("warnings") or [])
 
-    async def update_due_date(self, chore_id: int, due_date: str) -> None:
-        """Move a chore's due date without rewriting the whole record.
+    async def update_due_date(self, chore_id: int, due_date: datetime) -> None:
+        """Move a chore's due date without rewriting the rest of the record.
 
-        Donetick's ``DueDateReq`` binds ``updatedAt`` as required, so the
-        current timestamp is fetched first.
+        There is no standalone due-date route any more.  The former
+        ``PUT /api/v1/chores/{id}/dueDate`` sent a ``dueDate`` field that the
+        shared create/update struct no longer binds, and the path itself is no
+        longer served -- it answers 403.  The due date lives in ``nextDueDate``
+        on the main PUT, so this is a read-modify-write that carries every
+        other field across unchanged.
         """
         chore = await self.get_chore(chore_id)
         if chore is None:
             msg = f"Chore {chore_id} not found"
             raise DonetickNotFoundError(msg)
-        body: dict[str, Any] = {"dueDate": due_date}
-        if chore.updated_at is not None:
-            body["updatedAt"] = chore.updated_at.isoformat().replace("+00:00", "Z")
-        await self._put(f"/api/v1/chores/{chore_id}/dueDate", json=body)
+        await self.update_chore(await self.chore_to_req(chore, next_due_date=due_date))
 
     async def complete_chore(self, chore_id: int, note: str | None = None) -> DonetickChore:
         """Mark a chore done; recurring chores reschedule themselves."""
@@ -731,19 +739,34 @@ class DonetickClient:
 
     # -- helpers ------------------------------------------------------------
 
-    async def chore_to_req(self, chore: DonetickChore) -> ChoreReq:
+    async def chore_to_req(
+        self,
+        chore: DonetickChore,
+        *,
+        next_due_date: datetime | None = None,
+    ) -> ChoreReq:
         """Project a fetched chore into a full update payload.
 
         Donetick's update endpoint is a full replacement, so callers start
         from the current state and layer their changes on top.
+
+        Args:
+            chore: The chore as currently stored.
+            next_due_date: Overrides the stored due date.  The override is
+                applied *before* the payload is validated rather than
+                assigned onto it afterwards, because ``ChoreReq`` rejects a
+                rolling chore that has no due date.  Without the override a
+                chore that has already lost its date could not be edited at
+                all -- least of all have that date restored.
         """
+        due = next_due_date if next_due_date is not None else chore.next_due_date
         return ChoreReq(
             id=chore.id,
             name=chore.name,
             frequency_type=chore.frequency_type,
             frequency=chore.frequency or 1,
             frequency_metadata=chore.frequency_metadata,
-            next_due_date=chore.next_due_date,
+            next_due_date=due,
             is_rolling=chore.is_rolling,
             assignees=list(chore.assignees),
             assigned_to=chore.assigned_to,
