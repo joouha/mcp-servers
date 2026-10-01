@@ -1279,7 +1279,6 @@ name = "mcp-servers"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
-    { name = "browser-mcp" },
     { name = "caldav-mcp" },
     { name = "donetick-mcp" },
     { name = "joplin-mcp" },
@@ -1295,7 +1294,6 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "browser-mcp", editable = "packages/browser-mcp" },
     { name = "caldav-mcp", editable = "packages/caldav-mcp" },
     { name = "donetick-mcp", editable = "packages/donetick-mcp" },
     { name = "joplin-mcp", editable = "packages/joplin-mcp" },
