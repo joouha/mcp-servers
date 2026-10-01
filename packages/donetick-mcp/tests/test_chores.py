@@ -9,7 +9,6 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from conftest import requires_integration
 from donetick_mcp import (
     AssignmentStrategy,
     ChoreAssignees,
@@ -20,7 +19,7 @@ from donetick_mcp import (
     SubTask,
 )
 
-pytestmark = requires_integration
+pytestmark = pytest.mark.integration
 
 
 class TestListChores:

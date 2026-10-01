@@ -49,10 +49,31 @@ TEST_DISPLAY_NAME = "Test User"
 
 INTEGRATION_ENV = "DONETICK_INTEGRATION"
 
-requires_integration = pytest.mark.skipif(
-    os.environ.get(INTEGRATION_ENV) != "1",
-    reason=f"set {INTEGRATION_ENV}=1 to run tests against a real Donetick server",
-)
+
+def pytest_configure(config: pytest.Config) -> None:
+    """Register the marker that gates the live-server tests."""
+    config.addinivalue_line(
+        "markers",
+        f"integration: needs a live Donetick; set {INTEGRATION_ENV}=1 to run",
+    )
+
+
+def pytest_collection_modifyitems(
+    config: pytest.Config, items: list[pytest.Item]
+) -> None:
+    """Skip ``@pytest.mark.integration`` tests unless they are switched on.
+
+    The gate lives here rather than in a helper the test modules import,
+    because the workspace runs pytest with ``--import-mode=importlib``, which
+    leaves each ``tests`` directory off ``sys.path``.
+    """
+    if os.environ.get(INTEGRATION_ENV) == "1":
+        return
+    reason = f"set {INTEGRATION_ENV}=1 to run tests against a real Donetick server"
+    skip = pytest.mark.skip(reason=reason)
+    for item in items:
+        if "integration" in item.keywords:
+            item.add_marker(skip)
 
 
 # ---------------------------------------------------------------------------

@@ -5,10 +5,11 @@ Run with ``DONETICK_INTEGRATION=1 pytest``.
 
 from __future__ import annotations
 
-from conftest import requires_integration
+import pytest
+
 from donetick_mcp import DonetickClient
 
-pytestmark = requires_integration
+pytestmark = pytest.mark.integration
 
 
 class TestGetProfile:

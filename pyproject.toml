@@ -22,6 +22,11 @@ dev = [
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["packages"]
+# Several packages have a `tests/test_readonly.py` and none of the test
+# directories are packages, so pytest's default `prepend` import mode gives
+# them all the module name `test_readonly` and refuses to collect the 2nd and
+# 3rd. `importlib` mode derives module names from each file's path instead.
+addopts = "--import-mode=importlib"
 
 [tool.uv.workspace]
 members = [

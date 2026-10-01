@@ -184,9 +184,10 @@ Unit tests run entirely in-process against an `httpx.MockTransport`:
 uv run pytest packages/donetick-mcp/tests/
 ```
 
-Integration tests need a real Donetick. They download the official release
-binary, run it locally against a throwaway SQLite database on a free port, and
-tear it down afterwards:
+Integration tests are marked `@pytest.mark.integration` and are skipped unless
+`DONETICK_INTEGRATION=1` is set. They download the official release binary, run
+it locally against a throwaway SQLite database on a free port, and tear it down
+afterwards:
 
 ```bash
 DONETICK_INTEGRATION=1 uv run pytest packages/donetick-mcp/tests/

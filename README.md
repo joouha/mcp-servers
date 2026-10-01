@@ -53,6 +53,15 @@ See the individual package READMEs for configuration details and Claude Desktop 
 
 ## Development
 
+Run the whole workspace test suite from the repo root:
+
+```bash
+uv run pytest
+```
+
+Tests marked `integration` are skipped by default; see the individual package
+READMEs for how to enable them.
+
 Each server exposes a FastMCP app that can be tested interactively with the FastMCP inspector:
 
 ```bash
