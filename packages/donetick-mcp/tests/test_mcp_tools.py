@@ -139,7 +139,6 @@ def routes(**overrides: Any) -> dict[Key, Any]:
         ("PUT", f"/api/v1/chores/{CHORE_ID}/archive"): ok({"message": "archived"}),
         ("PUT", f"/api/v1/chores/{CHORE_ID}/unarchive"): ok({"message": "restored"}),
         ("DELETE", f"/api/v1/chores/{CHORE_ID}"): ok({}),
-        ("PUT", f"/api/v1/chores/{CHORE_ID}/dueDate"): ok({}),
         ("PUT", f"/api/v1/chores/{CHORE_ID}/subtask"): ok({}),
         ("GET", f"/api/v1/chores/{CHORE_ID}/history"): ok({"res": []}),
         ("GET", "/api/v1/chores/history"): ok({"res": []}),
@@ -667,17 +666,19 @@ class TestLifecycleTools:
             result = await h.client.call_tool("unarchive_chore", {"chore_id": CHORE_ID})
         assert "restored" in _payload(result)["message"]
 
-    async def test_update_due_date_uses_the_dedicated_endpoint(
+    async def test_update_due_date_uses_the_main_chore_endpoint(
         self, harness: Any
     ) -> None:
         async with harness() as h:
             result = await h.client.call_tool(
                 "update_due_date", {"chore_id": CHORE_ID, "due_date": "2027-02-01T08:00:00Z"}
             )
-        body = h.body_for("PUT", f"/api/v1/chores/{CHORE_ID}/dueDate")
-        assert body["dueDate"].startswith("2027-02-01T08:00:00")
-        # Donetick binds updatedAt as required.
-        assert body["updatedAt"] == "2026-01-02T00:00:00Z"
+        body = h.body_for("PUT", "/api/v1/chores/")
+        assert body["nextDueDate"].startswith("2027-02-01T08:00:00")
+        # The field name current Donetick ignores must never reappear.
+        assert "dueDate" not in body
+        # It is a read-modify-write, so the rest of the record comes along.
+        assert body["name"]
         assert _payload(result)["message"]
 
     async def test_update_due_date_rejects_an_empty_value(self, harness: Any) -> None:

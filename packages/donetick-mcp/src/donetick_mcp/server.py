@@ -436,14 +436,18 @@ async def update_chore(
     client = _client(ctx)
     try:
         chore = await _chore_or_error(ctx, chore_id)
-        req = await client.chore_to_req(chore)
+        # The caller's due date is threaded into the payload instead of being
+        # assigned onto it afterwards: a rolling chore whose stored date went
+        # missing fails `ChoreReq` validation while the payload is still being
+        # built, which would leave that chore uneditable -- and impossible to
+        # repair.  `_due_date` returns None when no date was supplied, which
+        # keeps the stored one.
+        req = await client.chore_to_req(chore, next_due_date=_due_date(ctx, due_date))
 
         if name is not None:
             req.name = name
         if description is not None:
             req.description = description
-        if due_date is not None:
-            req.next_due_date = _due_date(ctx, due_date)
         if frequency_type is not None:
             req.frequency_type = FrequencyType(frequency_type)
         if frequency is not None:
@@ -607,7 +611,7 @@ async def update_due_date(
         if parsed is None:
             msg = "due_date must not be empty"
             raise ValueError(msg)
-        await _client(ctx).update_due_date(chore_id, parsed.isoformat())
+        await _client(ctx).update_due_date(chore_id, parsed)
     except (DonetickError, ValueError) as exc:
         return _unwrap_error(exc, f"Failed to set due date for chore {chore_id}")
     return MessageResponse(message=f"Chore {chore_id} due date set to {due_date}")

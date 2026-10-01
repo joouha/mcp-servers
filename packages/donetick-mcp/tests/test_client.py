@@ -646,8 +646,8 @@ class TestPayloads:
         assert warnings == ["isPrivate not provided"]
         await client.aclose()
 
-    async def test_update_due_date_includes_updated_at(self, mock_client: Any) -> None:
-        """`DueDateReq` binds `updatedAt` as required."""
+    async def test_update_due_date_goes_through_the_main_put(self, mock_client: Any) -> None:
+        """Regression: the standalone `/dueDate` route 403s on current Donetick."""
         client, rec = mock_client(
             {
                 ("GET", "/api/v1/chores/5"): json_response(
@@ -655,17 +655,51 @@ class TestPayloads:
                         "res": {
                             "id": 5,
                             "name": "x",
-                            "updatedAt": "2026-01-01T10:00:00Z",
+                            "nextDueDate": "2026-01-01T10:00:00Z",
                         }
                     }
                 ),
-                ("PUT", "/api/v1/chores/5/dueDate"): json_response({}),
+                ("PUT", "/api/v1/chores/"): json_response({}),
             }
         )
-        await client.update_due_date(5, "2026-03-01T09:00:00+00:00")
+        await client.update_due_date(5, datetime(2026, 3, 1, 9, 0, tzinfo=UTC))
         body = rec.last_json()
-        assert body["dueDate"] == "2026-03-01T09:00:00+00:00"
-        assert body["updatedAt"] == "2026-01-01T10:00:00Z"
+        assert body["nextDueDate"] == "2026-03-01T09:00:00Z"
+        # The field name current Donetick ignores must never reappear.
+        assert "dueDate" not in body
+        await client.aclose()
+
+    async def test_update_due_date_restores_a_rolling_chore_missing_one(
+        self, mock_client: Any
+    ) -> None:
+        """A rolling chore that lost its date must remain editable."""
+        client, rec = mock_client(
+            {
+                ("GET", "/api/v1/chores/5"): json_response(
+                    {"res": {"id": 5, "name": "x", "isRolling": True}}
+                ),
+                ("PUT", "/api/v1/chores/"): json_response({}),
+            }
+        )
+        await client.update_due_date(5, datetime(2026, 3, 1, 9, 0, tzinfo=UTC))
+        body = rec.last_json()
+        assert body["nextDueDate"] == "2026-03-01T09:00:00Z"
+        assert body["isRolling"] is True
+        await client.aclose()
+
+    async def test_update_payload_keeps_explicit_nulls(self, mock_client: Any) -> None:
+        """The PUT is a full replacement: a dropped key is a reset server-side."""
+        client, rec = mock_client({("PUT", "/api/v1/chores/"): json_response({})})
+        await client.update_chore(
+            ChoreReq(id=5, name="x", points=None, assigned_to=None, next_due_date=None)
+        )
+        body = rec.last_json()
+        assert "points" in body and body["points"] is None
+        assert "assignedTo" in body and body["assignedTo"] is None
+        assert "nextDueDate" in body and body["nextDueDate"] is None
+        # Still guarded: Donetick dereferences these two without a nil check.
+        assert body["labelsV2"] == []
+        assert body["subTasks"] == []
         await client.aclose()
 
     async def test_update_due_date_raises_for_a_missing_chore(self, mock_client: Any) -> None:
@@ -677,7 +711,7 @@ class TestPayloads:
             }
         )
         with pytest.raises(DonetickNotFoundError, match="not found"):
-            await client.update_due_date(999, "2026-03-01T09:00:00Z")
+            await client.update_due_date(999, datetime(2026, 3, 1, 9, 0, tzinfo=UTC))
         await client.aclose()
 
     async def test_complete_sends_the_note_under_both_keys(self, mock_client: Any) -> None:

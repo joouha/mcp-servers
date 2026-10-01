@@ -238,7 +238,10 @@ class ChoreReq(BaseModel):
         validator could not see it.
         """
         if self.is_rolling and self.next_due_date is None:
-            msg = "next_due_date is required when is_rolling is true"
+            msg = (
+                "next_due_date is required when is_rolling is true; "
+                "pass due_date to set or restore it"
+            )
             raise ValueError(msg)
         return self
 
