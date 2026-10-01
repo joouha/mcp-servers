@@ -1,1064 +1,166 @@
 """Joplin MCP Server.
 
-An MCP server for managing notes, notebooks, and tags on a Joplin Server.
+An MCP server for managing notes, notebooks, tags, and attachments on a Joplin
+Server.
+
+The interesting tools are the partial editors -- ``append_to_note``,
+``replace_in_note`` and ``replace_section``. They resolve the edit server-side
+so the caller sends only the fragment it wants added or changed, which keeps
+large notes cheap to edit and makes it impossible to corrupt untouched text
+(including ``:/<resource-id>`` links, which the read tools render as names).
+Every write reports what it did, and every write can be dry-run first.
 """
 
 from __future__ import annotations
 
 import logging
 import os
-import re
-import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
 from typing import Any
 
-import httpx
 from fastmcp import Context, FastMCP
-from pydantic import BaseModel, Field
+
+from .client import (
+    MAX_BATCH_NOTES,
+    MAX_RESOURCE_SIZE,
+    TYPE_FOLDER,
+    TYPE_NOTE,
+    TYPE_NOTE_TAG,
+    TYPE_TAG,
+    JoplinClient,
+)
+from .editing import (
+    Heading,
+    Section,
+    SectionError,
+    context_lines,
+    find_section,
+    heading_count,
+    headings,
+    insert_block,
+    line_count,
+    line_of,
+    outline,
+    splice,
+)
+from .models import (
+    EditReport,
+    ExportedResource,
+    JoplinError,
+    NotebookCreatedResponse,
+    NotebookDeletedResponse,
+    NotebookDetail,
+    NotebookPathResult,
+    NotebookSummary,
+    NotebookUpdatedResponse,
+    NoteBatch,
+    NoteCreatedResponse,
+    NoteDeletedResponse,
+    NoteDetail,
+    NoteExport,
+    NoteOutline,
+    NotePage,
+    NoteResources,
+    NoteSummary,
+    NoteTagLink,
+    NoteUpdatedResponse,
+    NoteWithResources,
+    OutlineEntry,
+    PingResponse,
+    ResourceContent,
+    ResourceInfo,
+    ResourceRef,
+    TagAddedResponse,
+    TagCreatedResponse,
+    TagDeletedResponse,
+    TagRemovedResponse,
+    TagSummary,
+    TodoUpdateResponse,
+)
+from .todos import (
+    TODO_STATES,
+    completed_value,
+    due_value,
+    filter_by_todo,
+    ms_to_date,
+    now_iso,
+    now_ms,
+    parse_due,
+    todo_marker,
+)
 
 log = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
-
-TYPE_NOTE = 1
-TYPE_FOLDER = 2
-TYPE_TAG = 5
-TYPE_NOTE_TAG = 6
-
-_ID_RE = re.compile(r"^[0-9a-f]{32}$")
-
-
-# ---------------------------------------------------------------------------
-# Pydantic models
-# ---------------------------------------------------------------------------
-
-
-class NotebookSummary(BaseModel):
-    """A notebook (folder) on the Joplin server."""
-
-    id: str
-    title: str
-    parent_id: str = ""
-
-
-class NoteSummary(BaseModel):
-    """Compact note summary for list/search results."""
-
-    id: str
-    title: str
-    notebook_id: str = ""
-    is_todo: bool = False
-    updated_time: str = ""
-    preview: str = Field(
-        default="",
-        description="A short extract: load whole note with `get_note` before editing",
-    )
-
-
-class NoteDetail(BaseModel):
-    """Full note detail returned by get_note."""
-
-    id: str
-    title: str
-    body: str = ""
-    notebook_id: str = ""
-    is_todo: bool = False
-    created_time: str = ""
-    updated_time: str = ""
-
-
-class TagSummary(BaseModel):
-    """A tag on the Joplin server."""
-
-    id: str
-    title: str
-
-
-class NoteTagLink(BaseModel):
-    """A link between a note and a tag."""
-
-    id: str
-    note_id: str
-    tag_id: str
-
-
-class NoteCreatedResponse(BaseModel):
-    """Response after creating a note."""
-
-    id: str
-    message: str
-
-
-class NoteUpdatedResponse(BaseModel):
-    """Response after updating a note."""
-
-    message: str
-
-
-class NoteDeletedResponse(BaseModel):
-    """Response after deleting a note."""
-
-    message: str
-
-
-class NotebookCreatedResponse(BaseModel):
-    """Response after creating a notebook."""
-
-    id: str
-    message: str
-
-
-class NotebookUpdatedResponse(BaseModel):
-    """Response after updating a notebook."""
-
-    message: str
-
-
-class NotebookDeletedResponse(BaseModel):
-    """Response after deleting a notebook."""
-
-    message: str
-
-
-class TagCreatedResponse(BaseModel):
-    """Response after creating a tag."""
-
-    id: str
-    message: str
-
-
-class TagDeletedResponse(BaseModel):
-    """Response after deleting a tag."""
-
-    message: str
-
-
-class TagAddedResponse(BaseModel):
-    """Response after adding a tag to a note."""
-
-    message: str
-
-
-class TagRemovedResponse(BaseModel):
-    """Response after removing a tag from a note."""
-
-    message: str
-
-
-class JoplinError(BaseModel):
-    """Structured error response."""
-
-    error: str
+__all__ = [
+    "MAX_BATCH_NOTES",
+    "MAX_RESOURCE_SIZE",
+    "TODO_STATES",
+    "TYPE_FOLDER",
+    "TYPE_NOTE",
+    "TYPE_NOTE_TAG",
+    "TYPE_TAG",
+    "EditReport",
+    "ExportedResource",
+    "Heading",
+    "JoplinClient",
+    "JoplinError",
+    "NotebookCreatedResponse",
+    "NotebookDeletedResponse",
+    "NotebookDetail",
+    "NotebookPathResult",
+    "NotebookSummary",
+    "NotebookUpdatedResponse",
+    "NoteBatch",
+    "NoteCreatedResponse",
+    "NoteDeletedResponse",
+    "NoteDetail",
+    "NoteExport",
+    "NoteOutline",
+    "NotePage",
+    "NoteResources",
+    "NoteSummary",
+    "NoteTagLink",
+    "NoteUpdatedResponse",
+    "NoteWithResources",
+    "OutlineEntry",
+    "PingResponse",
+    "ResourceContent",
+    "ResourceInfo",
+    "ResourceRef",
+    "Section",
+    "SectionError",
+    "TagAddedResponse",
+    "TagCreatedResponse",
+    "TagDeletedResponse",
+    "TagRemovedResponse",
+    "TagSummary",
+    "TodoUpdateResponse",
+    "completed_value",
+    "context_lines",
+    "due_value",
+    "filter_by_todo",
+    "find_section",
+    "get_client",
+    "heading_count",
+    "headings",
+    "insert_block",
+    "line_count",
+    "line_of",
+    "main",
+    "mcp",
+    "ms_to_date",
+    "now_iso",
+    "now_ms",
+    "outline",
+    "parse_due",
+    "splice",
+    "todo_marker",
+]
 
 
 # ---------------------------------------------------------------------------
-# Joplin item parsing helpers
-# ---------------------------------------------------------------------------
-
-
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
-
-
-def _parse_joplin_item(raw: str) -> dict[str, Any]:
-    """Parse a raw Joplin .md item into its components."""
-    lines = raw.split("\n")
-
-    # Find where metadata starts (first line matching "id: <32hex>")
-    metadata_start = len(lines)
-    for i, line in enumerate(lines):
-        if re.match(r"^id:\s+[0-9a-f]{32}$", line.strip()):
-            metadata_start = i
-            break
-
-    # Parse metadata key-value pairs
-    metadata: dict[str, str] = {}
-    for line in lines[metadata_start:]:
-        stripped = line.strip()
-        if stripped and ":" in stripped:
-            key, _, value = stripped.partition(":")
-            metadata[key.strip()] = value.strip()
-
-    # Extract title (first non-empty line before metadata)
-    title = ""
-    body_start = 0
-    for i, line in enumerate(lines[:metadata_start]):
-        if line.strip():
-            title = line.strip()
-            body_start = i + 1
-            break
-
-    # Extract body (between title and metadata, trimmed)
-    body_lines = lines[body_start:metadata_start]
-    while body_lines and not body_lines[0].strip():
-        body_lines.pop(0)
-    while body_lines and not body_lines[-1].strip():
-        body_lines.pop()
-
-    return {
-        "title": title,
-        "body": "\n".join(body_lines),
-        "id": metadata.get("id", ""),
-        "parent_id": metadata.get("parent_id", ""),
-        "type": int(metadata.get("type_", "0")),
-        "is_todo": metadata.get("is_todo", "0") == "1",
-        "created_time": metadata.get("created_time", ""),
-        "updated_time": metadata.get("updated_time", ""),
-        "metadata": metadata,
-    }
-
-
-def _note_template(
-    note_id: str,
-    title: str,
-    body: str,
-    notebook_id: str,
-    now: str,
-) -> str:
-    return f"""{title}
-
-{body}
-
-id: {note_id}
-parent_id: {notebook_id}
-created_time: {now}
-updated_time: {now}
-is_conflict: 0
-latitude: 0.00000000
-longitude: 0.00000000
-altitude: 0.0000
-author:\x20
-source_url:\x20
-is_todo: 0
-todo_due: 0
-todo_completed: 0
-source: joplin-mcp
-source_application: joplin-mcp
-application_data:\x20
-order: 0
-user_created_time: {now}
-user_updated_time: {now}
-encryption_cipher_text:\x20
-encryption_applied: 0
-markup_language: 1
-is_shared: 0
-share_id:\x20
-conflict_original_id:\x20
-master_key_id:\x20
-user_data:\x20
-deleted_time: 0
-type_: 1"""
-
-
-def _folder_template(
-    folder_id: str,
-    title: str,
-    parent_id: str,
-    now: str,
-    share_id: str = "",
-) -> str:
-    is_shared = "1" if share_id else "0"
-    share_id_val = share_id if share_id else "\x20"
-    return f"""{title}
-
-id: {folder_id}
-parent_id: {parent_id}
-created_time: {now}
-updated_time: {now}
-user_created_time: {now}
-user_updated_time: {now}
-encryption_cipher_text:\x20
-encryption_applied: 0
-is_shared: {is_shared}
-share_id: {share_id_val}
-master_key_id:\x20
-icon:\x20
-deleted_time: 0
-type_: 2"""
-
-
-def _tag_template(tag_id: str, title: str, now: str) -> str:
-    return f"""{title}
-
-id: {tag_id}
-created_time: {now}
-updated_time: {now}
-user_created_time: {now}
-user_updated_time: {now}
-encryption_cipher_text:\x20
-encryption_applied: 0
-is_shared: 0
-parent_id:\x20
-type_: 5"""
-
-
-def _note_tag_template(
-    nt_id: str,
-    note_id: str,
-    tag_id: str,
-    tag_title: str,
-    now: str,
-) -> str:
-    return f"""{tag_title}
-
-id: {nt_id}
-note_id: {note_id}
-tag_id: {tag_id}
-created_time: {now}
-updated_time: {now}
-user_created_time: {now}
-user_updated_time: {now}
-encryption_cipher_text:\x20
-encryption_applied: 0
-is_shared: 0
-type_: 6"""
-
-
-# ---------------------------------------------------------------------------
-# Joplin HTTP client
-# ---------------------------------------------------------------------------
-
-
-class JoplinClient:
-    """Authenticated client for the Joplin Server REST API."""
-
-    def __init__(
-        self,
-        url: str,
-        email: str,
-        password: str,
-        root_notebook_id: str = "",
-    ) -> None:
-        self.url = url.rstrip("/")
-        self.email = email
-        self.password = password
-        self.root_notebook_id = root_notebook_id
-        self._http: httpx.AsyncClient | None = None
-        self._session_id: str | None = None
-
-    async def _get_http(self) -> httpx.AsyncClient:
-        if self._http is None or self._http.is_closed:
-            self._http = httpx.AsyncClient(
-                verify=False,  # noqa: S501
-                timeout=30,
-                limits=httpx.Limits(
-                    max_connections=100,
-                    max_keepalive_connections=60,
-                ),
-            )
-        return self._http
-
-    async def _login(self) -> str:
-        http = await self._get_http()
-        resp = await http.post(
-            f"{self.url}/api/sessions",
-            json={"email": self.email, "password": self.password},
-        )
-        resp.raise_for_status()
-        self._session_id = resp.json()["id"]
-        log.info("Authenticated with Joplin Server")
-        return self._session_id
-
-    async def _get_session(self) -> str:
-        if self._session_id:
-            return self._session_id
-        return await self._login()
-
-    async def _api(
-        self,
-        method: str,
-        path: str,
-        **kwargs: Any,
-    ) -> httpx.Response:
-        """Make an API request, re-authenticating on 403."""
-        token = await self._get_session()
-        extra_headers = kwargs.pop("headers", {})
-        headers = {"X-API-AUTH": token, **extra_headers}
-
-        http = await self._get_http()
-        resp = await http.request(
-            method, f"{self.url}{path}", headers=headers, **kwargs
-        )
-        if resp.status_code == 403:
-            self._session_id = None
-            token = await self._login()
-            headers["X-API-AUTH"] = token
-            resp = await http.request(
-                method, f"{self.url}{path}", headers=headers, **kwargs
-            )
-        resp.raise_for_status()
-        return resp
-
-    async def _put_item(self, item_id: str, content: str, share_id: str = "") -> None:
-        params: dict[str, str] = {}
-        if share_id:
-            params["share_id"] = share_id
-        await self._api(
-            "PUT",
-            f"/api/items/root:/{item_id}.md:/content",
-            content=content.encode("utf-8"),
-            headers={"Content-Type": "application/octet-stream"},
-            params=params or None,
-        )
-
-    async def _get_share_id(self, notebook_id: str) -> str:
-        """Return the share_id of a notebook, walking up the parent chain."""
-        if not notebook_id or not _ID_RE.match(notebook_id):
-            return ""
-        try:
-            resp = await self._api("GET", f"/api/items/root:/{notebook_id}.md:/content")
-            parsed = _parse_joplin_item(resp.text)
-            share_id = parsed["metadata"].get("share_id", "").strip()
-            if share_id:
-                return share_id
-            parent = parsed.get("parent_id", "")
-            if parent and _ID_RE.match(parent):
-                return await self._get_share_id(parent)
-        except Exception:
-            log.debug("Failed to get share_id for %s", notebook_id)
-        return ""
-
-    async def _fetch_all_items(self) -> list[dict[str, Any]]:
-        """Paginate through all children of the root folder."""
-        all_items: list[dict[str, Any]] = []
-        cursor = ""
-        while True:
-            params: dict[str, Any] = {"limit": 100}
-            if cursor:
-                params["cursor"] = cursor
-            resp = await self._api("GET", "/api/items/root:/:/children", params=params)
-            data = resp.json()
-            all_items.extend(data.get("items", []))
-            if not data.get("has_more"):
-                break
-            cursor = data.get("cursor", "")
-        return all_items
-
-    async def _fetch_parsed_items(self) -> list[dict[str, Any]]:
-        """Fetch and parse all .md items from the server."""
-        all_items = await self._fetch_all_items()
-        md_names = [
-            it["name"] for it in all_items if it.get("name", "").endswith(".md")
-        ]
-        results: list[dict[str, Any]] = []
-        for name in md_names:
-            try:
-                resp = await self._api("GET", f"/api/items/root:/{name}:/content")
-                parsed = _parse_joplin_item(resp.text)
-                if parsed["id"]:
-                    results.append(parsed)
-            except Exception:
-                log.debug("Failed to fetch %s", name)
-        return results
-
-    async def _get_allowed_notebook_ids(self) -> set[str] | None:
-        """Return the set of allowed notebook IDs (root + descendants).
-
-        Returns ``None`` when no restriction is configured.
-        """
-        if not self.root_notebook_id:
-            return None
-        items = await self._fetch_parsed_items()
-        folders = {
-            it["id"]: it["parent_id"] for it in items if it["type"] == TYPE_FOLDER
-        }
-        allowed: set[str] = {self.root_notebook_id}
-        changed = True
-        while changed:
-            changed = False
-            for fid, pid in folders.items():
-                if pid in allowed and fid not in allowed:
-                    allowed.add(fid)
-                    changed = True
-        return allowed
-
-    async def _assert_notebook_allowed(self, notebook_id: str) -> JoplinError | None:
-        """Return a ``JoplinError`` if *notebook_id* is outside the allowed tree."""
-        allowed = await self._get_allowed_notebook_ids()
-        if allowed is not None and notebook_id not in allowed:
-            return JoplinError(
-                error=f"Notebook {notebook_id} is outside the configured root notebook"
-            )
-        return None
-
-    # -- Notebooks ----------------------------------------------------------
-
-    async def list_notebooks(self) -> list[NotebookSummary]:
-        """List all notebooks (filtered to allowed tree if configured)."""
-        items = await self._fetch_parsed_items()
-        allowed = await self._get_allowed_notebook_ids()
-        return [
-            NotebookSummary(
-                id=it["id"],
-                title=it["title"],
-                parent_id=it["parent_id"],
-            )
-            for it in items
-            if it["type"] == TYPE_FOLDER and (allowed is None or it["id"] in allowed)
-        ]
-
-    async def get_notebook(self, notebook_id: str) -> NotebookSummary | JoplinError:
-        """Get a single notebook by ID."""
-        if not _ID_RE.match(notebook_id):
-            return JoplinError(error=f"Invalid notebook ID: '{notebook_id}'")
-        err = await self._assert_notebook_allowed(notebook_id)
-        if err:
-            return err
-        try:
-            resp = await self._api("GET", f"/api/items/root:/{notebook_id}.md:/content")
-        except httpx.HTTPStatusError as exc:
-            if exc.response.status_code == 404:
-                return JoplinError(error=f"Notebook {notebook_id} not found")
-            raise
-        parsed = _parse_joplin_item(resp.text)
-        if parsed["type"] != TYPE_FOLDER:
-            return JoplinError(error=f"Item {notebook_id} is not a notebook")
-        return NotebookSummary(
-            id=parsed["id"],
-            title=parsed["title"],
-            parent_id=parsed["parent_id"],
-        )
-
-    async def create_notebook(
-        self, title: str, parent_id: str = ""
-    ) -> NotebookCreatedResponse | JoplinError:
-        """Create a new notebook."""
-        if self.root_notebook_id:
-            if not parent_id:
-                parent_id = self.root_notebook_id
-            err = await self._assert_notebook_allowed(parent_id)
-            if err:
-                return err
-        nb_id = uuid.uuid4().hex
-        now = _now_iso()
-        share_id = await self._get_share_id(parent_id) if parent_id else ""
-        await self._put_item(
-            nb_id,
-            _folder_template(nb_id, title, parent_id, now, share_id=share_id),
-            share_id=share_id,
-        )
-        return NotebookCreatedResponse(
-            id=nb_id, message=f"Notebook '{title}' created successfully"
-        )
-
-    async def update_notebook(
-        self,
-        notebook_id: str,
-        title: str | None = None,
-        parent_id: str | None = None,
-    ) -> NotebookUpdatedResponse | JoplinError:
-        """Update a notebook's title or parent."""
-        if not _ID_RE.match(notebook_id):
-            return JoplinError(error=f"Invalid notebook ID: '{notebook_id}'")
-        if title is None and parent_id is None:
-            return JoplinError(error="Provide at least title or parent_id to update")
-        err = await self._assert_notebook_allowed(notebook_id)
-        if err:
-            return err
-        if parent_id is not None and parent_id:
-            err = await self._assert_notebook_allowed(parent_id)
-            if err:
-                return err
-        try:
-            resp = await self._api("GET", f"/api/items/root:/{notebook_id}.md:/content")
-        except httpx.HTTPStatusError as exc:
-            if exc.response.status_code == 404:
-                return JoplinError(error=f"Notebook {notebook_id} not found")
-            raise
-        parsed = _parse_joplin_item(resp.text)
-        if parsed["type"] != TYPE_FOLDER:
-            return JoplinError(error=f"Item {notebook_id} is not a notebook")
-
-        new_title = title if title is not None else parsed["title"]
-        now = _now_iso()
-        meta = parsed["metadata"]
-        meta["updated_time"] = now
-        meta["user_updated_time"] = now
-        if parent_id is not None:
-            meta["parent_id"] = parent_id
-
-        effective_parent = (
-            parent_id if parent_id is not None else meta.get("parent_id", "")
-        )
-        if not meta.get("share_id", "").strip():
-            share_id = await self._get_share_id(effective_parent)
-            if share_id:
-                meta["share_id"] = share_id
-                meta["is_shared"] = "1"
-
-        content = f"{new_title}\n\n" + "\n".join(f"{k}: {v}" for k, v in meta.items())
-        share_id = meta.get("share_id", "").strip()
-        await self._put_item(notebook_id, content, share_id=share_id)
-        return NotebookUpdatedResponse(
-            message=f"Notebook {notebook_id} updated successfully"
-        )
-
-    async def delete_notebook(
-        self, notebook_id: str, force: bool = False
-    ) -> NotebookDeletedResponse | JoplinError:
-        """Delete a notebook, optionally with all contents."""
-        if not _ID_RE.match(notebook_id):
-            return JoplinError(error=f"Invalid notebook ID: '{notebook_id}'")
-        if notebook_id == self.root_notebook_id:
-            return JoplinError(error="Cannot delete the configured root notebook")
-        err = await self._assert_notebook_allowed(notebook_id)
-        if err:
-            return err
-
-        items = await self._fetch_parsed_items()
-        nb = None
-        for it in items:
-            if it["id"] == notebook_id and it["type"] == TYPE_FOLDER:
-                nb = it
-                break
-        if nb is None:
-            return JoplinError(error=f"Notebook {notebook_id} not found")
-
-        children = [
-            it
-            for it in items
-            if it["parent_id"] == notebook_id and it["type"] in (TYPE_NOTE, TYPE_FOLDER)
-        ]
-        if children and not force:
-            return JoplinError(
-                error=(
-                    f"Notebook '{nb['title']}' is not empty "
-                    f"({len(children)} items). Set force=True to delete."
-                )
-            )
-
-        for child in children:
-            try:
-                await self._api("DELETE", f"/api/items/root:/{child['id']}.md:")
-            except Exception:
-                log.debug("Failed to delete child %s", child["id"])
-
-        await self._api("DELETE", f"/api/items/root:/{notebook_id}.md:")
-        return NotebookDeletedResponse(
-            message=f"Notebook '{nb['title']}' deleted successfully"
-        )
-
-    # -- Notes --------------------------------------------------------------
-
-    async def list_notes(
-        self,
-        notebook_id: str | None = None,
-        limit: int = 50,
-    ) -> list[NoteSummary]:
-        """List notes, optionally filtered by notebook."""
-        items = await self._fetch_parsed_items()
-        allowed = await self._get_allowed_notebook_ids()
-        notes = [
-            it
-            for it in items
-            if it["type"] == TYPE_NOTE
-            and (allowed is None or it["parent_id"] in allowed)
-        ]
-        if notebook_id:
-            notes = [n for n in notes if n["parent_id"] == notebook_id]
-        notes.sort(key=lambda x: x["updated_time"], reverse=True)
-        notes = notes[:limit]
-        return [
-            NoteSummary(
-                id=n["id"],
-                title=n["title"],
-                notebook_id=n["parent_id"],
-                is_todo=n["is_todo"],
-                updated_time=n["updated_time"],
-                preview=n["body"][:120].replace("\n", " ") if n["body"] else "",
-            )
-            for n in notes
-        ]
-
-    async def search_notes(self, query: str, limit: int = 20) -> list[NoteSummary]:
-        """Search notes by text in title or body."""
-        q = query.lower()
-        items = await self._fetch_parsed_items()
-        allowed = await self._get_allowed_notebook_ids()
-        notes = [
-            it
-            for it in items
-            if it["type"] == TYPE_NOTE
-            and (allowed is None or it["parent_id"] in allowed)
-            and (q in it["title"].lower() or q in it["body"].lower())
-        ]
-        notes.sort(key=lambda x: x["updated_time"], reverse=True)
-        notes = notes[:limit]
-        return [
-            NoteSummary(
-                id=n["id"],
-                title=n["title"],
-                notebook_id=n["parent_id"],
-                is_todo=n["is_todo"],
-                updated_time=n["updated_time"],
-                preview=n["body"][:120].replace("\n", " ") if n["body"] else "",
-            )
-            for n in notes
-        ]
-
-    async def get_note(self, note_id: str) -> NoteDetail | JoplinError:
-        """Get full details of a single note by ID."""
-        if not _ID_RE.match(note_id):
-            return JoplinError(error=f"Invalid note ID: '{note_id}'")
-        try:
-            resp = await self._api("GET", f"/api/items/root:/{note_id}.md:/content")
-        except httpx.HTTPStatusError as exc:
-            if exc.response.status_code == 404:
-                return JoplinError(error=f"Note {note_id} not found")
-            raise
-        parsed = _parse_joplin_item(resp.text)
-        if parsed["type"] != TYPE_NOTE:
-            return JoplinError(error=f"Item {note_id} is not a note")
-        err = await self._assert_notebook_allowed(parsed["parent_id"])
-        if err:
-            return err
-        return NoteDetail(
-            id=parsed["id"],
-            title=parsed["title"],
-            body=parsed["body"],
-            notebook_id=parsed["parent_id"],
-            is_todo=parsed["is_todo"],
-            created_time=parsed["created_time"],
-            updated_time=parsed["updated_time"],
-        )
-
-    async def create_note(
-        self,
-        title: str,
-        body: str = "",
-        notebook_id: str = "",
-    ) -> NoteCreatedResponse | JoplinError:
-        """Create a new note.
-
-        If *notebook_id* is not provided and a root notebook is configured, the
-        note is placed in the root notebook.  Otherwise, if exactly one notebook
-        exists, the note is placed there automatically.
-        """
-        if not notebook_id:
-            if self.root_notebook_id:
-                notebook_id = self.root_notebook_id
-            else:
-                notebooks = await self.list_notebooks()
-                if len(notebooks) == 1:
-                    notebook_id = notebooks[0].id
-        if notebook_id:
-            err = await self._assert_notebook_allowed(notebook_id)
-            if err:
-                return err
-        note_id = uuid.uuid4().hex
-        now = _now_iso()
-        share_id = await self._get_share_id(notebook_id) if notebook_id else ""
-        await self._put_item(
-            note_id,
-            _note_template(note_id, title, body, notebook_id, now),
-            share_id=share_id,
-        )
-        return NoteCreatedResponse(
-            id=note_id, message=f"Note '{title}' created successfully"
-        )
-
-    async def update_note(
-        self,
-        note_id: str,
-        title: str | None = None,
-        body: str | None = None,
-        notebook_id: str | None = None,
-    ) -> NoteUpdatedResponse | JoplinError:
-        """Update an existing note. Only provided fields are changed."""
-        if not _ID_RE.match(note_id):
-            return JoplinError(error=f"Invalid note ID: '{note_id}'")
-        try:
-            resp = await self._api("GET", f"/api/items/root:/{note_id}.md:/content")
-        except httpx.HTTPStatusError as exc:
-            if exc.response.status_code == 404:
-                return JoplinError(error=f"Note {note_id} not found")
-            raise
-        parsed = _parse_joplin_item(resp.text)
-        if parsed["type"] != TYPE_NOTE:
-            return JoplinError(error=f"Item {note_id} is not a note")
-        err = await self._assert_notebook_allowed(parsed["parent_id"])
-        if err:
-            return err
-        if notebook_id is not None:
-            err = await self._assert_notebook_allowed(notebook_id)
-            if err:
-                return err
-
-        new_title = title if title is not None else parsed["title"]
-        new_body = body if body is not None else parsed["body"]
-        now = _now_iso()
-
-        meta = parsed["metadata"]
-        meta["updated_time"] = now
-        meta["user_updated_time"] = now
-        if notebook_id is not None:
-            meta["parent_id"] = notebook_id
-
-        effective_parent = (
-            notebook_id if notebook_id is not None else meta.get("parent_id", "")
-        )
-        share_id = (
-            await self._get_share_id(effective_parent) if effective_parent else ""
-        )
-
-        content = f"{new_title}\n\n{new_body}\n\n" + "\n".join(
-            f"{k}: {v}" for k, v in meta.items()
-        )
-        await self._put_item(note_id, content, share_id=share_id)
-        return NoteUpdatedResponse(message=f"Note {note_id} updated successfully")
-
-    async def edit_note(
-        self,
-        note_id: str,
-        old_string: str,
-        new_string: str,
-        replace_all: bool = False,
-    ) -> NoteUpdatedResponse | JoplinError:
-        """Edit a note by replacing occurrences of old_string with new_string.
-
-        Reads the note first, performs the replacement on the body, then saves.
-        """
-        if not _ID_RE.match(note_id):
-            return JoplinError(error=f"Invalid note ID: '{note_id}'")
-        try:
-            resp = await self._api("GET", f"/api/items/root:/{note_id}.md:/content")
-        except httpx.HTTPStatusError as exc:
-            if exc.response.status_code == 404:
-                return JoplinError(error=f"Note {note_id} not found")
-            raise
-        parsed = _parse_joplin_item(resp.text)
-        if parsed["type"] != TYPE_NOTE:
-            return JoplinError(error=f"Item {note_id} is not a note")
-        err = await self._assert_notebook_allowed(parsed["parent_id"])
-        if err:
-            return err
-
-        old_body = parsed["body"]
-        if old_string not in old_body:
-            return JoplinError(error=f"old_string not found in note {note_id} body")
-
-        if replace_all:
-            new_body = old_body.replace(old_string, new_string)
-        else:
-            new_body = old_body.replace(old_string, new_string, 1)
-
-        now = _now_iso()
-        meta = parsed["metadata"]
-        meta["updated_time"] = now
-        meta["user_updated_time"] = now
-
-        parent_id = meta.get("parent_id", "")
-        share_id = await self._get_share_id(parent_id) if parent_id else ""
-
-        content = f"{parsed['title']}\n\n{new_body}\n\n" + "\n".join(
-            f"{k}: {v}" for k, v in meta.items()
-        )
-        await self._put_item(note_id, content, share_id=share_id)
-        return NoteUpdatedResponse(message=f"Note {note_id} edited successfully")
-
-    async def delete_note(self, note_id: str) -> NoteDeletedResponse | JoplinError:
-        """Delete a note by ID."""
-        if not _ID_RE.match(note_id):
-            return JoplinError(error=f"Invalid note ID: '{note_id}'")
-        try:
-            resp = await self._api("GET", f"/api/items/root:/{note_id}.md:/content")
-        except httpx.HTTPStatusError as exc:
-            if exc.response.status_code == 404:
-                return JoplinError(error=f"Note {note_id} not found")
-            raise
-        parsed = _parse_joplin_item(resp.text)
-        if parsed["type"] != TYPE_NOTE:
-            return JoplinError(error=f"Item {note_id} is not a note")
-        err = await self._assert_notebook_allowed(parsed["parent_id"])
-        if err:
-            return err
-
-        await self._api("DELETE", f"/api/items/root:/{note_id}.md:")
-        return NoteDeletedResponse(
-            message=f"Note '{parsed['title']}' deleted successfully"
-        )
-
-    # -- Tags ---------------------------------------------------------------
-
-    async def list_tags(self) -> list[TagSummary]:
-        """List all tags."""
-        items = await self._fetch_parsed_items()
-        return [
-            TagSummary(id=it["id"], title=it["title"])
-            for it in items
-            if it["type"] == TYPE_TAG
-        ]
-
-    async def create_tag(self, title: str) -> TagCreatedResponse:
-        """Create a new tag."""
-        tag_id = uuid.uuid4().hex
-        now = _now_iso()
-        await self._put_item(tag_id, _tag_template(tag_id, title, now))
-        return TagCreatedResponse(
-            id=tag_id, message=f"Tag '{title}' created successfully"
-        )
-
-    async def delete_tag(self, tag_id: str) -> TagDeletedResponse | JoplinError:
-        """Delete a tag and remove all its note associations."""
-        if not _ID_RE.match(tag_id):
-            return JoplinError(error=f"Invalid tag ID: '{tag_id}'")
-
-        items = await self._fetch_parsed_items()
-        tag = None
-        for it in items:
-            if it["id"] == tag_id and it["type"] == TYPE_TAG:
-                tag = it
-                break
-        if tag is None:
-            return JoplinError(error=f"Tag {tag_id} not found")
-
-        # Remove note-tag associations
-        note_tags = [
-            it
-            for it in items
-            if it["type"] == TYPE_NOTE_TAG and it["metadata"].get("tag_id") == tag_id
-        ]
-        for nt in note_tags:
-            try:
-                await self._api("DELETE", f"/api/items/root:/{nt['id']}.md:")
-            except Exception:
-                log.debug("Failed to delete note-tag %s", nt["id"])
-
-        await self._api("DELETE", f"/api/items/root:/{tag_id}.md:")
-        return TagDeletedResponse(
-            message=(
-                f"Tag '{tag['title']}' deleted successfully "
-                f"(removed from {len(note_tags)} notes)"
-            )
-        )
-
-    async def get_note_tags(self, note_id: str) -> list[TagSummary] | JoplinError:
-        """List tags assigned to a note."""
-        if not _ID_RE.match(note_id):
-            return JoplinError(error=f"Invalid note ID: '{note_id}'")
-        items = await self._fetch_parsed_items()
-        note = None
-        for it in items:
-            if it["id"] == note_id and it["type"] == TYPE_NOTE:
-                note = it
-                break
-        if note is None:
-            return JoplinError(error=f"Note {note_id} not found")
-        err = await self._assert_notebook_allowed(note.get("parent_id", ""))
-        if err:
-            return err
-
-        tag_ids = {
-            it["metadata"]["tag_id"]
-            for it in items
-            if it["type"] == TYPE_NOTE_TAG and it["metadata"].get("note_id") == note_id
-        }
-        tags_by_id = {it["id"]: it for it in items if it["type"] == TYPE_TAG}
-        return [
-            TagSummary(
-                id=tid,
-                title=tags_by_id[tid]["title"] if tid in tags_by_id else tid,
-            )
-            for tid in sorted(tag_ids)
-        ]
-
-    async def add_tag_to_note(
-        self, tag_id: str, note_id: str
-    ) -> TagAddedResponse | JoplinError:
-        """Add a tag to a note."""
-        for val, label in [(tag_id, "tag ID"), (note_id, "note ID")]:
-            if not _ID_RE.match(val):
-                return JoplinError(error=f"Invalid {label}: '{val}'")
-
-        items = await self._fetch_parsed_items()
-        tag = None
-        note = None
-        for it in items:
-            if it["id"] == tag_id and it["type"] == TYPE_TAG:
-                tag = it
-            if it["id"] == note_id and it["type"] == TYPE_NOTE:
-                note = it
-        if tag is None:
-            return JoplinError(error=f"Tag {tag_id} not found")
-        if note is None:
-            return JoplinError(error=f"Note {note_id} not found")
-        err = await self._assert_notebook_allowed(note.get("parent_id", ""))
-        if err:
-            return err
-
-        # Check if already linked
-        already = any(
-            it["type"] == TYPE_NOTE_TAG
-            and it["metadata"].get("note_id") == note_id
-            and it["metadata"].get("tag_id") == tag_id
-            for it in items
-        )
-        if already:
-            return JoplinError(
-                error=f"Tag '{tag['title']}' already on note '{note['title']}'"
-            )
-
-        nt_id = uuid.uuid4().hex
-        now = _now_iso()
-        note_parent = note.get("parent_id", "")
-        share_id = await self._get_share_id(note_parent) if note_parent else ""
-        await self._put_item(
-            nt_id,
-            _note_tag_template(nt_id, note_id, tag_id, tag["title"], now),
-            share_id=share_id,
-        )
-        return TagAddedResponse(
-            message=(f"Tag '{tag['title']}' added to note '{note['title']}'")
-        )
-
-    async def remove_tag_from_note(
-        self, tag_id: str, note_id: str
-    ) -> TagRemovedResponse | JoplinError:
-        """Remove a tag from a note."""
-        for val, label in [(tag_id, "tag ID"), (note_id, "note ID")]:
-            if not _ID_RE.match(val):
-                return JoplinError(error=f"Invalid {label}: '{val}'")
-
-        items = await self._fetch_parsed_items()
-
-        # Verify the note is in an allowed notebook
-        note = next(
-            (it for it in items if it["id"] == note_id and it["type"] == TYPE_NOTE),
-            None,
-        )
-        if note is None:
-            return JoplinError(error=f"Note {note_id} not found")
-        err = await self._assert_notebook_allowed(note.get("parent_id", ""))
-        if err:
-            return err
-
-        note_tags = [
-            it
-            for it in items
-            if it["type"] == TYPE_NOTE_TAG
-            and it["metadata"].get("note_id") == note_id
-            and it["metadata"].get("tag_id") == tag_id
-        ]
-        if not note_tags:
-            return JoplinError(error="Tag is not assigned to this note")
-
-        for nt in note_tags:
-            await self._api("DELETE", f"/api/items/root:/{nt['id']}.md:")
-
-        return TagRemovedResponse(message="Tag removed from note successfully")
-
-    async def close(self) -> None:
-        """Close the underlying HTTP client."""
-        if self._http and not self._http.is_closed:
-            await self._http.aclose()
-
-
-# ---------------------------------------------------------------------------
-# MCP Server
+# Server
 # ---------------------------------------------------------------------------
 
 
@@ -1084,6 +186,9 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict[str, Any]]:
         root_notebook_id=root_notebook_id,
     )
     try:
+        # Start the sync in the background so the first tool call does not wait
+        # for a cold index. A cached index is already warm by this point.
+        client.load_cache()
         yield {"client": client}
     finally:
         await client.close()
@@ -1092,38 +197,52 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict[str, Any]]:
 mcp = FastMCP(
     "Joplin",
     instructions=(
-        "MCP server for managing notes, notebooks, and tags on a Joplin Server. "
-        "Use the provided tools to list, search, create, update, edit, and delete "
-        "notes and notebooks, as well as manage tags."
+        "MCP server for managing notes, notebooks, tags, and attachments on a "
+        "Joplin Server.\n\n"
+        "Partial edits: prefer append_to_note, replace_in_note, and "
+        "replace_section over update_note. They splice the edit server-side, so "
+        "you send only the fragment that changes and existing content -- "
+        "including resource links -- is preserved byte for byte. Use "
+        "get_note_outline to find a section by line number, get_note(raw=True) "
+        "to copy an exact anchor, and dry_run=True to preview any write. Every "
+        "edit reports character/line/heading deltas plus the lines around the "
+        "change so you can verify it without re-reading the note."
     ),
     lifespan=lifespan,
 )
 
 
-def _get_client(ctx: Context) -> JoplinClient:
+def get_client(ctx: Context) -> JoplinClient:
     """Retrieve the shared JoplinClient from the lifespan context."""
     return ctx.request_context.lifespan_context["client"]
 
 
-# -- Notebook tools ---------------------------------------------------------
+# -- Connection --------------------------------------------------------------
+
+
+@mcp.tool()
+async def ping_joplin(ctx: Context) -> PingResponse:
+    """Check connectivity to Joplin Server and report what the index can see."""
+    return await get_client(ctx).ping()
+
+
+# -- Notebook tools ----------------------------------------------------------
 
 
 @mcp.tool()
 async def list_notebooks(ctx: Context) -> list[NotebookSummary]:
-    """List all notebooks on the Joplin server."""
-    client = _get_client(ctx)
-    return await client.list_notebooks()
+    """List all notebooks, with their IDs and parent notebooks."""
+    return await get_client(ctx).list_notebooks()
 
 
 @mcp.tool()
-async def get_notebook(ctx: Context, notebook_id: str) -> NotebookSummary | JoplinError:
-    """Get details of a single notebook.
+async def get_notebook(ctx: Context, notebook_id: str) -> NotebookDetail | JoplinError:
+    """Get a notebook with its notes and sub-notebooks.
 
     Args:
         notebook_id: The 32-character hex notebook ID.
     """
-    client = _get_client(ctx)
-    return await client.get_notebook(notebook_id)
+    return await get_client(ctx).get_notebook(notebook_id)
 
 
 @mcp.tool()
@@ -1136,10 +255,22 @@ async def create_notebook(
 
     Args:
         title: Notebook title.
-        parent_id: Parent notebook ID for nesting (optional).
+        parent_id: Parent notebook ID for nesting (optional). Defaults to the
+            configured root notebook when JOPLIN_NOTEBOOK_ID is set.
     """
-    client = _get_client(ctx)
-    return await client.create_notebook(title=title, parent_id=parent_id)
+    return await get_client(ctx).create_notebook(title=title, parent_id=parent_id)
+
+
+@mcp.tool()
+async def get_or_create_notebook(
+    ctx: Context, path: str
+) -> NotebookPathResult | JoplinError:
+    """Resolve a "/"-separated notebook path, creating any missing levels.
+
+    Args:
+        path: Notebook path, e.g. "Work/Projects/Website".
+    """
+    return await get_client(ctx).get_or_create_notebook(path)
 
 
 @mcp.tool()
@@ -1149,15 +280,17 @@ async def update_notebook(
     title: str | None = None,
     parent_id: str | None = None,
 ) -> NotebookUpdatedResponse | JoplinError:
-    """Update a notebook's title or parent. Only provided fields are changed.
+    """Rename a notebook or move it to a different parent.
+
+    A move that would create a circular reference is refused, as is a move
+    inside the notebook's own subtree.
 
     Args:
         notebook_id: The notebook ID to update.
         title: New title (optional).
         parent_id: New parent notebook ID, empty string for root (optional).
     """
-    client = _get_client(ctx)
-    return await client.update_notebook(
+    return await get_client(ctx).update_notebook(
         notebook_id=notebook_id, title=title, parent_id=parent_id
     )
 
@@ -1168,17 +301,19 @@ async def delete_notebook(
     notebook_id: str,
     force: bool = False,
 ) -> NotebookDeletedResponse | JoplinError:
-    """Delete a notebook. Refuses if non-empty unless force=True.
+    """Delete a notebook. Refuses a non-empty notebook unless force=True.
+
+    With force=True the notebook's entire subtree -- notes and nested
+    sub-notebooks at any depth -- is deleted.
 
     Args:
         notebook_id: The notebook ID to delete.
         force: Delete with all contents if True.
     """
-    client = _get_client(ctx)
-    return await client.delete_notebook(notebook_id=notebook_id, force=force)
+    return await get_client(ctx).delete_notebook(notebook_id=notebook_id, force=force)
 
 
-# -- Note tools -------------------------------------------------------------
+# -- Note tools --------------------------------------------------------------
 
 
 @mcp.tool()
@@ -1186,15 +321,53 @@ async def list_notes(
     ctx: Context,
     notebook_id: str | None = None,
     limit: int = 50,
-) -> list[NoteSummary]:
-    """List notes, optionally filtered by notebook.
+    tag: str | None = None,
+    todo: str | None = None,
+) -> list[NoteSummary] | JoplinError:
+    """List notes, optionally filtered by notebook, tag, and to-do state.
 
     Args:
         notebook_id: Filter by notebook ID (optional).
         limit: Maximum number of notes to return (default 50).
+        tag: Filter by tag name (optional).
+        todo: Filter by to-do state: 'all' (any to-do), 'open' (uncompleted),
+            'done' (completed), or omit for no filtering (optional).
     """
-    client = _get_client(ctx)
-    return await client.list_notes(notebook_id=notebook_id, limit=limit)
+    return await get_client(ctx).list_notes(
+        notebook_id=notebook_id, limit=limit, tag=tag, todo=todo
+    )
+
+
+@mcp.tool()
+async def get_all_notes(
+    ctx: Context,
+    notebook_id: str | None = None,
+    order_by: str = "updated_time",
+    order_dir: str = "desc",
+    page: int = 1,
+    limit: int = 50,
+    todo: str | None = None,
+) -> NotePage | JoplinError:
+    """Get all notes with pagination, sorting, and optional filters.
+
+    Args:
+        notebook_id: Filter by notebook ID (optional).
+        order_by: Sort field: updated_time, created_time, title, todo_due, or
+            todo_completed (default: updated_time). Unset to-do dates sort last.
+        order_dir: Sort direction: 'asc' or 'desc' (default: desc).
+        page: Page number starting from 1 (default: 1).
+        limit: Notes per page, max 100 (default: 50).
+        todo: Filter by to-do state: 'all', 'open', 'done', or omit for no
+            filtering (optional).
+    """
+    return await get_client(ctx).get_all_notes(
+        notebook_id=notebook_id,
+        order_by=order_by,
+        order_dir=order_dir,
+        page=page,
+        limit=limit,
+        todo=todo,
+    )
 
 
 @mcp.tool()
@@ -1202,26 +375,73 @@ async def search_notes(
     ctx: Context,
     query: str,
     limit: int = 20,
-) -> list[NoteSummary]:
-    """Search notes by text in title or body.
+    scope: str = "all",
+    notebook_id: str | None = None,
+    tag: str | None = None,
+) -> list[NoteSummary] | JoplinError:
+    """Search notes by text. All query terms must match (AND).
 
     Args:
-        query: Search string (case-insensitive).
+        query: Space-separated terms; a note must contain all of them.
         limit: Maximum number of results (default 20).
+        scope: Where to match: 'title', 'body', or 'all' (default).
+        notebook_id: Restrict to a notebook (optional).
+        tag: Restrict to notes carrying this tag name (optional).
     """
-    client = _get_client(ctx)
-    return await client.search_notes(query=query, limit=limit)
+    return await get_client(ctx).search_notes(
+        query=query, limit=limit, scope=scope, notebook_id=notebook_id, tag=tag
+    )
 
 
 @mcp.tool()
-async def get_note(ctx: Context, note_id: str) -> NoteDetail | JoplinError:
-    """Get full details of a single note including its body.
+async def get_note(
+    ctx: Context, note_id: str, raw: bool = False
+) -> NoteDetail | JoplinError:
+    """Get a note's content.
+
+    Args:
+        note_id: The 32-character hex note ID.
+        raw: Return the body verbatim -- no resource labels substituted, so it
+            can be copied as an exact anchor for replace_in_note (default False).
+    """
+    return await get_client(ctx).get_note(note_id, raw=raw)
+
+
+@mcp.tool()
+async def get_notes_batch(
+    ctx: Context, note_ids: list[str], raw: bool = False
+) -> NoteBatch | JoplinError:
+    """Read several notes at once, fetched in parallel.
+
+    Args:
+        note_ids: Note IDs to read, up to 50.
+        raw: Return each body verbatim (default False).
+    """
+    return await get_client(ctx).get_notes_batch(note_ids, raw=raw)
+
+
+@mcp.tool()
+async def get_note_full(ctx: Context, note_id: str) -> NoteWithResources | JoplinError:
+    """Get a note with all its resources embedded as base64. Can be large.
 
     Args:
         note_id: The 32-character hex note ID.
     """
-    client = _get_client(ctx)
-    return await client.get_note(note_id)
+    return await get_client(ctx).get_note_full(note_id)
+
+
+@mcp.tool()
+async def export_note(ctx: Context, note_id: str) -> NoteExport | JoplinError:
+    """Export a note as markdown with resources as base64 blocks.
+
+    The body uses plain local filenames (e.g. ![](photo.jpg)) and each resource
+    is returned separately with its filename, MIME type and base64 payload, ready
+    to be written to disk.
+
+    Args:
+        note_id: The 32-character hex note ID.
+    """
+    return await get_client(ctx).export_note(note_id)
 
 
 @mcp.tool()
@@ -1230,6 +450,8 @@ async def create_note(
     title: str,
     body: str = "",
     notebook_id: str = "",
+    is_todo: bool = False,
+    due: str | None = None,
 ) -> NoteCreatedResponse | JoplinError:
     """Create a new note.
 
@@ -1237,9 +459,13 @@ async def create_note(
         title: Note title.
         body: Note body in Markdown.
         notebook_id: Parent notebook ID (optional).
+        is_todo: Create the note as a to-do (optional).
+        due: Due date as YYYY-MM-DD or an ISO-8601 timestamp. Setting it implies
+            is_todo; bare dates are UTC midnight (optional).
     """
-    client = _get_client(ctx)
-    return await client.create_note(title=title, body=body, notebook_id=notebook_id)
+    return await get_client(ctx).create_note(
+        title=title, body=body, notebook_id=notebook_id, is_todo=is_todo, due=due
+    )
 
 
 @mcp.tool()
@@ -1250,49 +476,165 @@ async def update_note(
     body: str | None = None,
     notebook_id: str | None = None,
 ) -> NoteUpdatedResponse | JoplinError:
-    """Update an existing note. Only provided fields are changed.
+    """Replace a note's title, body, and/or notebook in one write.
+
+    `body` must be the complete new text, which makes this a poor fit for large
+    notes. For anything short of a full rewrite prefer append_to_note,
+    replace_in_note, or replace_section: they splice server-side and never make
+    you reproduce existing content.
 
     Args:
         note_id: The note ID to update.
         title: New title (optional).
-        body: New body in Markdown — replaces entire body (optional).
+        body: New body -- replaces the entire body (optional).
         notebook_id: Move to another notebook (optional).
     """
-    client = _get_client(ctx)
-    return await client.update_note(
-        note_id=note_id,
-        title=title,
-        body=body,
-        notebook_id=notebook_id,
+    return await get_client(ctx).update_note(
+        note_id=note_id, title=title, body=body, notebook_id=notebook_id
     )
 
 
 @mcp.tool()
-async def edit_note(
-    ctx: Context,
-    note_id: str,
-    old_string: str,
-    new_string: str,
-    replace_all: bool = False,
-) -> NoteUpdatedResponse | JoplinError:
-    """Edit a note by replacing text in its body.
+async def get_note_outline(ctx: Context, note_id: str) -> NoteOutline | JoplinError:
+    """Map a note's structure: headings with line numbers and sizes.
 
-    Reads the note's current content, replaces occurrences of old_string with
-    new_string, and saves the result. Use this for surgical edits instead of
-    replacing the entire body.
+    A cheap way to navigate a large note before editing it -- pick a heading
+    from here and hand it to append_to_note or replace_section instead of
+    reading the whole body. Sizes cover each heading's span, subsections
+    included. No body text is returned.
 
     Args:
-        note_id: The note ID to edit.
-        old_string: The exact text to find in the note body.
-        new_string: The text to replace it with.
-        replace_all: If True, replace all occurrences; otherwise only the first.
+        note_id: The 32-character hex note ID.
     """
-    client = _get_client(ctx)
-    return await client.edit_note(
+    return await get_client(ctx).get_note_outline(note_id)
+
+
+@mcp.tool()
+async def append_to_note(
+    ctx: Context,
+    note_id: str,
+    text: str,
+    section: str | None = None,
+    position: str = "end",
+    separator: str = "\n\n",
+    if_absent: str | None = None,
+    dry_run: bool = False,
+) -> EditReport | JoplinError:
+    """Add text to a note without resending its existing body.
+
+    The note is read and spliced server-side, so everything already there --
+    including resource links -- is preserved byte for byte. Prefer this over
+    update_note whenever you are only adding content.
+
+    Args:
+        note_id: The note ID.
+        text: Markdown to insert.
+        section: Heading to insert under, e.g. "Hosts" or "## Hosts". Applies to
+            the whole note when omitted (optional).
+        position: Where the text goes.
+            Inside the section (or note): "end" (default) or "start".
+            Beside a named section, as a sibling: "before" its heading, or
+            "after" its whole span -- subsections included. These two require
+            `section`, ignore `separator`, and never rewrite an existing byte,
+            which makes "before" the way to put a new entry at the top of a
+            newest-first log that opens with a preamble.
+        separator: Text placed between existing content and the insert for
+            "start"/"end" (default: a blank line; pass "\\n" for table rows or
+            list items). Ignored by "before"/"after".
+        if_absent: Skip the write when this string is already in the body -- an
+            idempotency guard that makes a re-run a no-op (optional).
+        dry_run: Report the change and its context without writing.
+    """
+    return await get_client(ctx).append_to_note(
         note_id=note_id,
-        old_string=old_string,
-        new_string=new_string,
+        text=text,
+        section=section,
+        position=position,
+        separator=separator,
+        if_absent=if_absent,
+        dry_run=dry_run,
+    )
+
+
+@mcp.tool()
+async def replace_in_note(
+    ctx: Context,
+    note_id: str,
+    old_text: str,
+    new_text: str,
+    replace_all: bool = False,
+    dry_run: bool = False,
+) -> EditReport | JoplinError:
+    """Replace an exact string inside a note body -- a surgical edit.
+
+    Only the fragment crosses the wire; the rest of the note is never rewritten.
+    Refuses to act when `old_text` is missing, or matches more than once without
+    replace_all, so a bad anchor cannot silently mangle a note. Pass an empty
+    `new_text` to delete the fragment.
+
+    Args:
+        note_id: The note ID.
+        old_text: Exact text to find -- copy it verbatim from get_note(raw=True).
+        new_text: Replacement text ("" deletes the anchor).
+        replace_all: Replace every occurrence instead of demanding a unique
+            match.
+        dry_run: Report the change and its context without writing.
+    """
+    return await get_client(ctx).replace_in_note(
+        note_id=note_id,
+        old_text=old_text,
+        new_text=new_text,
         replace_all=replace_all,
+        dry_run=dry_run,
+    )
+
+
+@mcp.tool()
+async def replace_section(
+    ctx: Context,
+    note_id: str,
+    section: str,
+    text: str,
+    dry_run: bool = False,
+) -> EditReport | JoplinError:
+    """Replace everything under a heading, keeping the heading line itself.
+
+    Rewrites one section of a large note without resending -- or even reading --
+    the rest of it. Pass an empty `text` to empty the section.
+
+    Args:
+        note_id: The note ID.
+        section: Heading whose content to replace, e.g. "Hosts" or "## Hosts".
+        text: New Markdown content for that section.
+        dry_run: Report the change and its context without writing.
+    """
+    return await get_client(ctx).replace_section(
+        note_id=note_id, section=section, text=text, dry_run=dry_run
+    )
+
+
+@mcp.tool()
+async def set_todo(
+    ctx: Context,
+    note_id: str,
+    is_todo: bool | None = None,
+    completed: bool | None = None,
+    due: str | None = None,
+) -> TodoUpdateResponse | JoplinError:
+    """Set or clear a note's to-do state, completion, and due date.
+
+    Args:
+        note_id: The note ID to modify.
+        is_todo: Make the note a to-do (True) or a plain note (False). Setting
+            False also clears the due date and completion (optional).
+        completed: Mark the to-do done (True) or reopen it (False). Completing a
+            note also forces it to be a to-do (optional).
+        due: Due date as YYYY-MM-DD or an ISO-8601 timestamp; "" clears it.
+            Setting a due date also forces the note to be a to-do. Bare dates
+            are UTC midnight (optional).
+    """
+    return await get_client(ctx).set_todo(
+        note_id=note_id, is_todo=is_todo, completed=completed, due=due
     )
 
 
@@ -1303,18 +645,16 @@ async def delete_note(ctx: Context, note_id: str) -> NoteDeletedResponse | Jopli
     Args:
         note_id: The note ID to delete.
     """
-    client = _get_client(ctx)
-    return await client.delete_note(note_id)
+    return await get_client(ctx).delete_note(note_id)
 
 
-# -- Tag tools --------------------------------------------------------------
+# -- Tag tools ---------------------------------------------------------------
 
 
 @mcp.tool()
 async def list_tags(ctx: Context) -> list[TagSummary]:
     """List all tags on the Joplin server."""
-    client = _get_client(ctx)
-    return await client.list_tags()
+    return await get_client(ctx).list_tags()
 
 
 @mcp.tool()
@@ -1324,8 +664,7 @@ async def create_tag(ctx: Context, title: str) -> TagCreatedResponse:
     Args:
         title: Tag title.
     """
-    client = _get_client(ctx)
-    return await client.create_tag(title=title)
+    return await get_client(ctx).create_tag(title)
 
 
 @mcp.tool()
@@ -1335,8 +674,7 @@ async def delete_tag(ctx: Context, tag_id: str) -> TagDeletedResponse | JoplinEr
     Args:
         tag_id: The tag ID to delete.
     """
-    client = _get_client(ctx)
-    return await client.delete_tag(tag_id)
+    return await get_client(ctx).delete_tag(tag_id)
 
 
 @mcp.tool()
@@ -1346,8 +684,7 @@ async def get_note_tags(ctx: Context, note_id: str) -> list[TagSummary] | Joplin
     Args:
         note_id: The note ID.
     """
-    client = _get_client(ctx)
-    return await client.get_note_tags(note_id)
+    return await get_client(ctx).get_note_tags(note_id)
 
 
 @mcp.tool()
@@ -1360,8 +697,7 @@ async def add_tag_to_note(
         tag_id: The tag ID.
         note_id: The note ID.
     """
-    client = _get_client(ctx)
-    return await client.add_tag_to_note(tag_id=tag_id, note_id=note_id)
+    return await get_client(ctx).add_tag_to_note(tag_id, note_id)
 
 
 @mcp.tool()
@@ -1374,8 +710,44 @@ async def remove_tag_from_note(
         tag_id: The tag ID.
         note_id: The note ID.
     """
-    client = _get_client(ctx)
-    return await client.remove_tag_from_note(tag_id=tag_id, note_id=note_id)
+    return await get_client(ctx).remove_tag_from_note(tag_id, note_id)
+
+
+# -- Resource tools ----------------------------------------------------------
+
+
+@mcp.tool()
+async def get_note_resources(ctx: Context, note_id: str) -> NoteResources | JoplinError:
+    """List resources (images, attachments) referenced by a note.
+
+    Args:
+        note_id: The note ID.
+    """
+    return await get_client(ctx).get_note_resources(note_id)
+
+
+@mcp.tool()
+async def get_resource_info(
+    ctx: Context, resource_id: str
+) -> ResourceInfo | JoplinError:
+    """Get metadata for a resource.
+
+    Args:
+        resource_id: The resource ID (32-char hex).
+    """
+    return await get_client(ctx).get_resource_info(resource_id)
+
+
+@mcp.tool()
+async def download_resource(
+    ctx: Context, resource_id: str
+) -> ResourceContent | JoplinError:
+    """Download a resource as base64. Refuses anything over 50 MB.
+
+    Args:
+        resource_id: The resource ID (32-char hex).
+    """
+    return await get_client(ctx).download_resource(resource_id)
 
 
 # ---------------------------------------------------------------------------
