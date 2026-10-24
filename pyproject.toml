@@ -39,3 +39,4 @@ caldav-mcp = { workspace = true }
 tandoor-mcp = { workspace = true }
 joplin-mcp = { workspace = true }
 browser-mcp = { workspace = true }
+fmd-mcp = { workspace = true }
