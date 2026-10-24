@@ -9,6 +9,7 @@ A collection of [Model Context Protocol (MCP)](https://modelcontextprotocol.io/)
 | [browser-mcp](packages/browser-mcp/) | Browser automation (open, click, type, scroll) | [Camoufox](https://camoufox.com/) |
 | [caldav-mcp](packages/caldav-mcp/) | Manage calendar events via CalDAV | [Nextcloud](https://nextcloud.com/), [Radicale](https://radicale.org/), [Baikal](https://sabre.io/baikal/), etc. |
 | [donetick-mcp](packages/donetick-mcp/) | Manage household chores, labels, and subtasks | [Donetick](https://donetick.com/) |
+| [fmd-mcp](packages/fmd-mcp/) | View location history, request current location, send device commands | [FMD (Find My Device)](https://fmd-foss.org/) |
 | [joplin-mcp](packages/joplin-mcp/) | Manage notes, notebooks, and tags | [Joplin Server](https://joplinapp.org/) |
 | [tandoor-mcp](packages/tandoor-mcp/) | Manage meal plans and recipes | [Tandoor Recipes](https://tandoor.dev/) |
 
@@ -31,6 +32,7 @@ Each server can then be run directly:
 browser-mcp
 caldav-mcp
 donetick-mcp
+fmd-mcp
 joplin-mcp
 tandoor-mcp
 ```
@@ -45,6 +47,7 @@ See the individual package READMEs for configuration details and Claude Desktop 
 │   ├── browser-mcp/         # Camoufox browser automation server
 │   ├── caldav-mcp/          # CalDAV calendar server
 │   ├── donetick-mcp/        # Donetick chores server
+│   ├── fmd-mcp/             # FMD (Find My Device) location server
 │   ├── joplin-mcp/          # Joplin notes server
 │   └── tandoor-mcp/         # Tandoor meal planning server
 ├── pyproject.toml            # Workspace root
@@ -68,6 +71,7 @@ Each server exposes a FastMCP app that can be tested interactively with the Fast
 fastmcp dev packages/browser-mcp/src/browser_mcp/__init__.py:mcp
 fastmcp dev packages/caldav-mcp/src/caldav_mcp/__init__.py:mcp
 fastmcp dev packages/donetick-mcp/src/donetick_mcp/__init__.py:mcp
+fastmcp dev packages/fmd-mcp/src/fmd_mcp/__init__.py:mcp
 fastmcp dev packages/joplin-mcp/src/joplin_mcp/__init__.py:mcp
 fastmcp dev packages/tandoor-mcp/src/tandoor_mcp/__init__.py:mcp
 ```
